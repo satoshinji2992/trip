@@ -29,17 +29,19 @@ def create_restaurants_and_foods(scenics):
 
     total_restaurants = 0
     total_foods = 0
-    target_scenics = scenics[:10]
+    target_scenics = scenics
 
     for scenic in target_scenics:
         nodes = GraphNode.query.filter_by(scenic_id=scenic.id).all()
-        node_ids = [n.id for n in nodes] if nodes else []
+        node_map = {n.id: n for n in nodes}
+        node_ids = list(node_map.keys())
         num_restaurants = random.randint(3, 6)
 
         for _ in range(num_restaurants):
             cuisine = random.choice(cuisines)
             prefix = random.choice(restaurant_prefixes)
             gn_id = random.choice(node_ids) if node_ids else None
+            graph_node = node_map.get(gn_id)
 
             restaurant = Restaurant(
                 scenic_id=scenic.id,
@@ -47,8 +49,8 @@ def create_restaurants_and_foods(scenics):
                 cuisine=cuisine,
                 description=f"位于{scenic.name}内的{cuisine_names[cuisine]}餐厅，环境优雅，味道正宗。",
                 address=f"{scenic.name}内",
-                latitude=scenic.latitude + random.uniform(-0.005, 0.005),
-                longitude=scenic.longitude + random.uniform(-0.005, 0.005),
+                latitude=graph_node.latitude if graph_node else scenic.latitude + random.uniform(-0.005, 0.005),
+                longitude=graph_node.longitude if graph_node else scenic.longitude + random.uniform(-0.005, 0.005),
                 graph_node_id=gn_id,
                 avg_price=round(random.uniform(15, 100), 0),
                 rating=round(random.uniform(3.5, 5.0), 1),
