@@ -7,6 +7,52 @@ import { Card, Row, Col, Select, Button, Radio, Tag, List, Spin, Empty, Space, m
 import { CompassOutlined, AimOutlined, SwapOutlined, CarOutlined, NodeIndexOutlined } from '@ant-design/icons'
 import { routeAPI } from '../services/api'
 
+const MAX_RENDER_NODES = 220
+const MAX_RENDER_EDGES = 900
+const MAX_LABEL_NODES = 60
+
+function pickRenderItems(nodes, edges, selectedIds) {
+  const importantIds = new Set(selectedIds.filter(Boolean))
+  const sampledNodes = sampleWithPriority(nodes, MAX_RENDER_NODES, importantIds)
+  const visibleNodeIds = new Set(sampledNodes.map((node) => node.id))
+  const candidateEdges = edges.filter((edge) => visibleNodeIds.has(edge.from_node_id) && visibleNodeIds.has(edge.to_node_id))
+  const sampledEdges = sampleWithPriority(candidateEdges, MAX_RENDER_EDGES)
+
+  return {
+    nodes: sampledNodes,
+    edges: sampledEdges,
+    simplified: sampledNodes.length < nodes.length || sampledEdges.length < edges.length,
+  }
+}
+
+function sampleWithPriority(items, limit, priorityIds = new Set()) {
+  if (items.length <= limit) return items
+
+  const priorityItems = []
+  const normalItems = []
+  items.forEach((item) => {
+    if (priorityIds.has(item.id)) priorityItems.push(item)
+    else normalItems.push(item)
+  })
+
+  const remaining = Math.max(limit - priorityItems.length, 0)
+  if (remaining === 0) return priorityItems.slice(0, limit)
+
+  const step = Math.max(1, Math.ceil(normalItems.length / remaining))
+  const sampled = []
+  for (let i = 0; i < normalItems.length && sampled.length < remaining; i += step) {
+    sampled.push(normalItems[i])
+  }
+
+  return [...priorityItems, ...sampled].slice(0, limit)
+}
+
+function pickLabelNodeIds(nodes, selectedIds) {
+  const importantIds = new Set(selectedIds.filter(Boolean))
+  const sampledNodes = sampleWithPriority(nodes, MAX_LABEL_NODES, importantIds)
+  return new Set(sampledNodes.map((node) => node.id))
+}
+
 function RoutePlanPage() {
   const { scenicId } = useParams()
   const [mapData, setMapData] = useState({ nodes: [], edges: [] })
@@ -49,11 +95,15 @@ function RoutePlanPage() {
 
     const nodeMap = {}
     mapData.nodes.forEach(n => { nodeMap[n.id] = n })
+    const activePathNodes = new Set((pathResult?.path || multiResult?.ordered_path || []))
+    const selectedIds = [fromNode, toNode, ...multiDests, ...activePathNodes]
+    const renderData = pickRenderItems(mapData.nodes, mapData.edges, selectedIds)
+    const labelNodeIds = pickLabelNodeIds(renderData.nodes, selectedIds)
 
     // 绘制边
     ctx.strokeStyle = '#d9d9d9'
-    ctx.lineWidth = 1.5
-    mapData.edges.forEach(e => {
+    ctx.lineWidth = renderData.simplified ? 1 : 1.5
+    renderData.edges.forEach(e => {
       const from = nodeMap[e.from_node_id]
       const to = nodeMap[e.to_node_id]
       if (from && to) {
@@ -83,22 +133,23 @@ function RoutePlanPage() {
     }
 
     // 绘制节点
-    mapData.nodes.forEach(n => {
+    renderData.nodes.forEach(n => {
       const isFrom = n.id === fromNode
       const isTo = n.id === toNode
       const isDest = multiDests.includes(n.id)
       ctx.beginPath()
-      ctx.arc(n.x, n.y, isFrom || isTo || isDest ? 8 : 5, 0, Math.PI * 2)
+      ctx.arc(n.x, n.y, isFrom || isTo || isDest ? 8 : (renderData.simplified ? 4 : 5), 0, Math.PI * 2)
       ctx.fillStyle = isFrom ? '#52c41a' : isTo ? '#f5222d' : isDest ? '#fa8c16' : '#1890ff'
       ctx.fill()
       ctx.strokeStyle = '#fff'
       ctx.lineWidth = 2
       ctx.stroke()
-      // 标签
-      ctx.fillStyle = '#333'
-      ctx.font = '11px sans-serif'
-      ctx.textAlign = 'center'
-      ctx.fillText(n.name, n.x, n.y - 12)
+      if (labelNodeIds.has(n.id)) {
+        ctx.fillStyle = '#333'
+        ctx.font = '11px sans-serif'
+        ctx.textAlign = 'center'
+        ctx.fillText(n.name, n.x, n.y - 12)
+      }
     })
   }
 
@@ -170,6 +221,11 @@ function RoutePlanPage() {
             <canvas ref={canvasRef} onClick={handleCanvasClick}
                     style={{ width: '100%', height: 500, cursor: 'crosshair' }}
                     className="map-canvas" />
+            {(mapData.nodes.length > MAX_RENDER_NODES || mapData.edges.length > MAX_RENDER_EDGES) && (
+              <div className="mt-2 text-xs text-amber-600">
+                地图数据较大，画布已自动简化显示；路径计算和节点选择仍基于完整数据。
+              </div>
+            )}
             <div className="text-xs text-gray-400 mt-2">
               <span className="inline-block w-3 h-3 rounded-full bg-green-500 mr-1" /> 起点
               <span className="inline-block w-3 h-3 rounded-full bg-red-500 ml-3 mr-1" /> 终点
