@@ -147,7 +147,11 @@ def get_multi_destination_path():
 
     # 构建分段路径信息
     segments_info = []
+    unreachable_node_ids = []
     for seg in segment_paths:
+        if 'unreachable' in seg:
+            unreachable_node_ids.extend(seg.get('unreachable') or [])
+            continue
         from_info = graph.nodes.get(seg['from'], {})
         to_info = graph.nodes.get(seg['to'], {})
         segments_info.append({
@@ -169,6 +173,11 @@ def get_multi_destination_path():
         'strategy': strategy,
         'transport': transport,
         'return_to_start': return_to_start,
+        'unreachable_node_ids': unreachable_node_ids,
+        'unreachable_names': [
+            graph.nodes.get(node_id, {}).get('name', str(node_id))
+            for node_id in unreachable_node_ids
+        ],
     })
 
 

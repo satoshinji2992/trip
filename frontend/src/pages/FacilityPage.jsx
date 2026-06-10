@@ -20,12 +20,16 @@ function FacilityPage() {
   const [facilityTypes, setFacilityTypes] = useState([])
 
   useEffect(() => {
+    setLoading(true)
     Promise.all([
       routeAPI.nodes({ scenic_id: scenicId }),
       facilityAPI.types(),
-    ]).then(([nodesRes, typesRes]) => {
+      facilityAPI.byCategory({ scenic_id: scenicId }),
+    ]).then(([nodesRes, typesRes, facilitiesRes]) => {
       setNodes(nodesRes.data || [])
       setFacilityTypes(typesRes.data || [])
+      setFacilities(facilitiesRes.data?.items || [])
+      if ((nodesRes.data || []).length > 0) setSelectedNode((nodesRes.data || [])[0].id)
     }).catch(() => {}).finally(() => setLoading(false))
   }, [scenicId])
 
@@ -47,7 +51,7 @@ function FacilityPage() {
     try {
       const res = await facilityAPI.nearby({
         scenic_id: scenicId, node_id: selectedNode,
-        type: typeFilter || undefined, max_distance: 2000,
+        type: typeFilter || undefined, max_distance: 10000,
       })
       setFacilities(res.data?.items || [])
     } catch (e) { /* ignore */ }
@@ -58,15 +62,8 @@ function FacilityPage() {
     setTypeFilter(type)
     setLoading(true)
     try {
-      if (selectedNode) {
-        const res = await facilityAPI.nearby({
-          scenic_id: scenicId, node_id: selectedNode, type: type || undefined, max_distance: 2000,
-        })
-        setFacilities(res.data?.items || [])
-      } else {
-        const res = await facilityAPI.byCategory({ scenic_id: scenicId, category: type })
-        setFacilities(res.data?.items || [])
-      }
+      const res = await facilityAPI.byCategory({ scenic_id: scenicId, category: type || undefined })
+      setFacilities(res.data?.items || [])
     } catch (e) { /* ignore */ }
     setLoading(false)
   }

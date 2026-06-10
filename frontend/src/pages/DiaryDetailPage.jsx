@@ -3,8 +3,8 @@
  */
 import React, { useState, useEffect, useContext } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Tag, Rate, Button, Divider, Input, List, Avatar, Spin, Empty, Space, message, Statistic, Row, Col } from 'antd'
-import { UserOutlined, EditOutlined, DeleteOutlined, EyeOutlined, MessageOutlined, CompressOutlined } from '@ant-design/icons'
+import { Alert, Card, Tag, Rate, Button, Divider, Input, List, Avatar, Spin, Empty, Space, message, Statistic, Row, Col } from 'antd'
+import { UserOutlined, EditOutlined, DeleteOutlined, EyeOutlined, MessageOutlined, CompressOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import { diaryAPI } from '../services/api'
 import { UserContext } from '../App'
 
@@ -18,6 +18,8 @@ function DiaryDetailPage() {
   const [commentContent, setCommentContent] = useState('')
   const [commentRating, setCommentRating] = useState(5)
   const [submitting, setSubmitting] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [animationResult, setAnimationResult] = useState(null)
   const navigate = useNavigate()
 
   const fetchDiary = () => {
@@ -51,6 +53,18 @@ function DiaryDetailPage() {
     } catch (e) { /* ignore */ }
   }
 
+  const handleGenerateAnimation = async () => {
+    if (!user) { message.warning('请先登录'); return }
+    if (!isOwner) { message.warning('只能为自己的日记生成动画'); return }
+    setGenerating(true)
+    try {
+      const res = await diaryAPI.generateAnimation(id, {})
+      setAnimationResult(res.data)
+      message.success('动画生成请求已提交')
+    } catch (e) { /* ignore */ }
+    setGenerating(false)
+  }
+
   if (loading) return <Spin size="large" className="flex justify-center py-20" />
   if (!diary) return <Empty description="日记不存在" />
 
@@ -70,6 +84,7 @@ function DiaryDetailPage() {
           </div>
           {isOwner && (
             <Space>
+              <Button icon={<VideoCameraOutlined />} loading={generating} onClick={handleGenerateAnimation}>生成旅游动画</Button>
               <Button icon={<EditOutlined />} onClick={() => navigate(`/diary/edit/${id}`)}>编辑</Button>
               <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>删除</Button>
             </Space>
@@ -114,6 +129,26 @@ function DiaryDetailPage() {
                   <img src={img.image_path} alt={img.description} className="w-full h-full object-cover" />
                 </div>
               ))}
+            </div>
+          </>
+        )}
+
+        {animationResult && (
+          <>
+            <Divider>AIGC旅游动画</Divider>
+            {animationResult.video_url ? (
+              <video src={animationResult.video_url} controls className="w-full rounded bg-black mb-3" />
+            ) : (
+              <Alert
+                type="info"
+                showIcon
+                className="mb-3"
+                message="动画任务已提交"
+                description="接口没有直接返回视频地址，可能需要到服务商控制台或任务查询接口查看生成结果。"
+              />
+            )}
+            <div className="text-gray-500 text-sm" style={{ whiteSpace: 'pre-wrap' }}>
+              {animationResult.prompt}
             </div>
           </>
         )}

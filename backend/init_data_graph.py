@@ -129,11 +129,19 @@ def _create_graph_from_overpass(scenic, radius=900):
     (._;>;);
     out body;
     """
-    params = urllib.parse.urlencode({'data': query})
-    url = f'{OVERPASS_URL}?{params}'
+    data = urllib.parse.urlencode({'data': query}).encode('utf-8')
+    request = urllib.request.Request(
+        OVERPASS_URL,
+        data=data,
+        headers={
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': 'trip-course-demo/1.0',
+        },
+        method='POST',
+    )
 
     try:
-        with urllib.request.urlopen(url, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=45) as response:
             payload = json.loads(response.read().decode('utf-8'))
     except urllib.error.URLError as exc:
         raise RuntimeError(f'Overpass 请求失败: {exc}') from exc
@@ -162,6 +170,9 @@ def _extract_overpass_ways(payload, scenic):
         highway = tags.get('highway')
         if highway not in ALLOWED_HIGHWAYS:
             continue
+        road_name = tags.get('name') or tags.get('ref')
+        if not road_name:
+            continue
 
         coords = []
         for node_id in element.get('nodes', []):
@@ -179,7 +190,7 @@ def _extract_overpass_ways(payload, scenic):
 
         ways.append({
             'id': element['id'],
-            'name': tags.get('name') or tags.get('ref') or f'{scenic.name}道路{len(ways) + 1}',
+            'name': road_name,
             'highway': highway,
             'oneway': str(tags.get('oneway', 'no')).lower() in {'yes', 'true', '1'},
             'coords': coords,
@@ -233,61 +244,86 @@ def _persist_way_graph(scenic, ways):
     graph_nodes = []
     all_points = []
     edge_specs = []
+    key_usage = {}
+    key_source_names = {}
 
     for way in ways:
-        for point in way['coords']:
-            all_points.append((point['lat'], point['lng']))
-
-    projected = _project_coordinates(all_points)
-    projected_index = 0
-    for way in ways:
-        node_refs_in_way = []
         for point in way['coords']:
             key = _coordinate_key(point['lat'], point['lng'])
-            if key not in coordinate_nodes:
-                x, y = projected[projected_index]
-                projected_index += 1
-                node = GraphNode(
-                    scenic_id=scenic.id,
-                    name='',
-                    node_type='intersection',
-                    latitude=point['lat'],
-                    longitude=point['lng'],
-                    x=x,
-                    y=y,
-                )
-                db.session.add(node)
-                coordinate_nodes[key] = {
-                    'db_node': node,
-                    'source_name': point.get('node_name', ''),
-                    'ways': set(),
-                }
-                graph_nodes.append(node)
-            node_data = coordinate_nodes[key]
-            node_data['ways'].add(way['name'])
-            node_refs_in_way.append(node_data['db_node'])
+            key_usage[key] = key_usage.get(key, 0) + 1
+            if point.get('node_name'):
+                key_source_names[key] = point.get('node_name')
 
-        for idx in range(len(node_refs_in_way) - 1):
-            from_node = node_refs_in_way[idx]
-            to_node = node_refs_in_way[idx + 1]
-            distance = _haversine_meters(
-                from_node.latitude, from_node.longitude,
-                to_node.latitude, to_node.longitude,
+    for way in ways:
+        coords = way['coords']
+        for idx, point in enumerate(coords):
+            key = _coordinate_key(point['lat'], point['lng'])
+            if _should_keep_way_point(key, idx, len(coords), key_usage, key_source_names):
+                all_points.append((point['lat'], point['lng']))
+
+    projected_by_key = _project_coordinates_by_key(all_points)
+
+    def get_or_create_node(point, way_name):
+        key = _coordinate_key(point['lat'], point['lng'])
+        if key not in coordinate_nodes:
+            x, y = projected_by_key[key]
+            node = GraphNode(
+                scenic_id=scenic.id,
+                name='',
+                node_type='intersection',
+                latitude=point['lat'],
+                longitude=point['lng'],
+                x=x,
+                y=y,
             )
-            if distance < 1:
+            db.session.add(node)
+            coordinate_nodes[key] = {
+                'db_node': node,
+                'source_name': key_source_names.get(key, ''),
+                'ways': set(),
+            }
+            graph_nodes.append(node)
+        node_data = coordinate_nodes[key]
+        if way_name:
+            node_data['ways'].add(way_name)
+        return node_data['db_node']
+
+    for way in ways:
+        coords = way['coords']
+        last_node = None
+        last_point = None
+        segment_distance = 0.0
+
+        for idx, point in enumerate(coords):
+            key = _coordinate_key(point['lat'], point['lng'])
+            if last_point is not None:
+                segment_distance += _haversine_meters(
+                    last_point['lat'], last_point['lng'],
+                    point['lat'], point['lng'],
+                )
+
+            if not _should_keep_way_point(key, idx, len(coords), key_usage, key_source_names):
+                last_point = point
                 continue
 
-            edge_specs.append({
-                'from_node': from_node,
-                'to_node': to_node,
-                'distance': round(distance, 1),
-                'road_name': way['name'],
-                'bidirectional': not way['oneway'],
-                'road_type': _map_highway_to_road_type(way['highway']),
-                'transport_allowed': _map_highway_to_transport(way['highway'], scenic.type),
-                'ideal_speed': _ideal_speed_for_highway(way['highway']),
-                'congestion': _default_congestion_for_highway(way['highway']),
-            })
+            current_node = get_or_create_node(point, way['name'])
+            if last_node is not None and last_node is not current_node and segment_distance >= 1:
+                road_name = way['name'] or _fallback_road_name(scenic, way['highway'])
+                edge_specs.append({
+                    'from_node': last_node,
+                    'to_node': current_node,
+                    'distance': round(segment_distance, 1),
+                    'road_name': road_name,
+                    'bidirectional': not way['oneway'],
+                    'road_type': _map_highway_to_road_type(way['highway']),
+                    'transport_allowed': _map_highway_to_transport(way['highway'], scenic.type),
+                    'ideal_speed': _ideal_speed_for_highway(way['highway']),
+                    'congestion': _default_congestion_for_highway(way['highway']),
+                })
+
+            last_node = current_node
+            last_point = point
+            segment_distance = 0.0
 
     db.session.flush()
     node_degree = {node.id: 0 for node in graph_nodes}
@@ -322,10 +358,10 @@ def _persist_way_graph(scenic, ways):
             joined = '/'.join(list(sorted(node_data['ways']))[:2])
             node.name = f'{joined}交汇点'
         elif node_degree.get(node.id, 0) <= 1:
-            node.name = f'{scenic.name}入口{index}'
+            node.name = f'{scenic.name}出入口{index}'
             node.node_type = 'gate'
         else:
-            node.name = f'{scenic.name}节点{index}'
+            node.name = f'路口{index}'
 
     if not graph_nodes or not graph_edges:
         raise ValueError('真实地图数据不足以形成可用图结构')
@@ -426,6 +462,37 @@ def _project_coordinates(points):
         y = 650 - ((lat - min_lat) / lat_span) * 600
         projected.append((round(x, 2), round(y, 2)))
     return projected
+
+
+def _project_coordinates_by_key(points):
+    """按去重后的坐标生成投影，避免 OSM 复用节点时画布坐标错位"""
+    unique_points = {}
+    for lat, lng in points:
+        unique_points.setdefault(_coordinate_key(lat, lng), (lat, lng))
+
+    projected = _project_coordinates(list(unique_points.values()))
+    return dict(zip(unique_points.keys(), projected))
+
+
+def _should_keep_way_point(key, index, total, key_usage, key_source_names):
+    """真实路网只保留端点、交汇点和有名字的点，普通折线点压缩进边距离"""
+    return (
+        index == 0
+        or index == total - 1
+        or key_usage.get(key, 0) > 1
+        or bool(key_source_names.get(key))
+    )
+
+
+def _fallback_road_name(scenic, highway):
+    """给没有 OSM 名称的道路一个可读名称，避免出现内部编号"""
+    if highway == 'steps':
+        return '台阶通道'
+    if highway in {'footway', 'pedestrian', 'path'}:
+        return '步行道'
+    if highway == 'cycleway':
+        return '骑行道'
+    return '园区道路' if scenic.type == 'scenic' else '校园道路'
 
 
 def _coordinate_key(lat, lng):

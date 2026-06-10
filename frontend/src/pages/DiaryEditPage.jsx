@@ -3,8 +3,8 @@
  */
 import React, { useState, useEffect, useContext } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Form, Input, Select, Button, Switch, Tag, Spin, message } from 'antd'
-import { SaveOutlined } from '@ant-design/icons'
+import { Alert, Card, Form, Image, Input, Select, Button, Switch, Tag, Spin, Upload, message } from 'antd'
+import { InboxOutlined, SaveOutlined } from '@ant-design/icons'
 import { diaryAPI, scenicAPI } from '../services/api'
 import { UserContext } from '../App'
 
@@ -19,6 +19,8 @@ function DiaryEditPage() {
   const [scenicOptions, setScenicOptions] = useState([])
   const [tags, setTags] = useState([])
   const [tagInput, setTagInput] = useState('')
+  const [images, setImages] = useState([])
+  const [imageDescription, setImageDescription] = useState('')
   const navigate = useNavigate()
   const isEdit = !!id
 
@@ -35,6 +37,7 @@ function DiaryEditPage() {
           const d = res.data
           form.setFieldsValue({ title: d.title, content: d.content, scenic_id: d.scenic_id, destination: d.destination, is_public: d.is_public })
           setTags(d.tags || [])
+          setImages(d.images || [])
         })
         .catch(() => {})
         .finally(() => setLoading(false))
@@ -48,13 +51,36 @@ function DiaryEditPage() {
       if (isEdit) {
         await diaryAPI.update(id, data)
         message.success('更新成功')
+        navigate('/diary?tab=my')
       } else {
-        await diaryAPI.create(data)
-        message.success('创建成功')
+        const res = await diaryAPI.create(data)
+        message.success('创建成功，可继续上传图片')
+        navigate(`/diary/edit/${res.data.id}`)
       }
-      navigate('/diary?tab=my')
     } catch (e) { /* ignore */ }
     setSubmitting(false)
+  }
+
+  const handleImageUpload = async ({ file, onSuccess, onError }) => {
+    if (!isEdit) {
+      message.warning('请先保存日记后再上传图片')
+      onError?.(new Error('请先保存日记后再上传图片'))
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('image', file)
+    formData.append('description', imageDescription)
+
+    try {
+      const res = await diaryAPI.uploadImage(id, formData)
+      setImages((prev) => [...prev, res.data])
+      setImageDescription('')
+      message.success('图片上传成功')
+      onSuccess?.(res.data)
+    } catch (e) {
+      onError?.(e)
+    }
   }
 
   const addTag = () => {
@@ -86,6 +112,42 @@ function DiaryEditPage() {
           </Form.Item>
           <Form.Item name="content" label="内容" rules={[{ required: true, message: '请输入内容' }]}>
             <TextArea rows={12} placeholder="记录你的旅行故事..." showCount maxLength={10000} />
+          </Form.Item>
+          <Form.Item label="图片">
+            {!isEdit && (
+              <Alert
+                type="info"
+                showIcon
+                className="mb-3"
+                message="先发布日记后即可上传图片"
+              />
+            )}
+            {images.length > 0 && (
+              <div className="grid grid-cols-3 gap-3 mb-3">
+                {images.map((img) => (
+                  <div key={img.id} className="aspect-video bg-gray-100 rounded overflow-hidden">
+                    <Image src={img.image_path} alt={img.description || '日记图片'} className="w-full h-full object-cover" />
+                  </div>
+                ))}
+              </div>
+            )}
+            <Input
+              className="mb-2"
+              placeholder="图片说明，可选"
+              value={imageDescription}
+              onChange={(e) => setImageDescription(e.target.value)}
+              disabled={!isEdit}
+            />
+            <Upload.Dragger
+              accept="image/*"
+              multiple
+              disabled={!isEdit}
+              showUploadList={false}
+              customRequest={handleImageUpload}
+            >
+              <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+              <p className="ant-upload-text">点击或拖拽图片上传</p>
+            </Upload.Dragger>
           </Form.Item>
           <Form.Item label="标签">
             <div className="flex flex-wrap gap-1 mb-2">

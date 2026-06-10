@@ -1,6 +1,8 @@
 """旅游日记路由 - 日记管理、交流、全文搜索、压缩存储"""
 import json
 import os
+import urllib.error
+import urllib.request
 from flask import Blueprint, request, current_app
 from flask_login import login_required, current_user
 from app import db
@@ -408,6 +410,107 @@ def upload_diary_image(diary_id):
     except Exception as e:
         db.session.rollback()
         return error(f'上传失败: {str(e)}')
+
+
+@diary_bp.route('/<int:diary_id>/generate-animation', methods=['POST'])
+@login_required
+def generate_diary_animation(diary_id):
+    """调用 OpenAI-compatible AIGC 接口生成旅游动画"""
+    diary = Diary.query.get(diary_id)
+    if not diary:
+        return error('日记不存在', 404)
+    if diary.user_id != current_user.id:
+        return error('无权操作', 403)
+
+    api_key = current_app.config.get('AIGC_API_KEY', '')
+    if not api_key:
+        return error('未配置 AIGC_API_KEY，无法调用动画生成接口')
+
+    data = request.get_json(silent=True) or {}
+    user_prompt = data.get('prompt', '').strip()
+    image_id = data.get('image_id')
+    selected_image = None
+    if image_id:
+        selected_image = diary.images.filter_by(id=image_id).first()
+    if not selected_image:
+        selected_image = diary.images.order_by(DiaryImage.created_at.asc()).first()
+
+    prompt = user_prompt or (
+        f"根据旅游日记《{diary.title}》生成一段5秒旅游动画，画面自然流畅，"
+        f"体现目的地{diary.destination or '旅行地点'}的游览氛围。日记内容：{diary.get_content()[:500]}"
+    )
+
+    payload = {
+        'model': current_app.config.get('AIGC_MODEL', 'wan2.1-i2v-turbo'),
+        'prompt': prompt,
+        'duration': data.get('duration', 5),
+    }
+    if selected_image:
+        payload['image_url'] = request.host_url.rstrip('/') + selected_image.image_path
+
+    base_url = current_app.config.get('AIGC_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1').rstrip('/')
+    endpoint = current_app.config.get('AIGC_ENDPOINT', '/videos/generations')
+    url = f"{base_url}/{endpoint.lstrip('/')}"
+
+    http_request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+
+    try:
+        with urllib.request.urlopen(http_request, timeout=120) as response:
+            result = json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode('utf-8', errors='ignore')
+        current_app.logger.warning(f'AIGC接口调用失败: {body}')
+        return error(f'AIGC接口调用失败: HTTP {exc.code}')
+    except Exception as exc:
+        current_app.logger.warning(f'AIGC接口调用失败: {exc}')
+        return error(f'AIGC接口调用失败: {str(exc)}')
+
+    video_url = _extract_aigc_media_url(result, ('video_url', 'url'))
+    return success({
+        'video_url': video_url,
+        'prompt': prompt,
+        'image_url': payload.get('image_url'),
+        'raw': result,
+    }, '动画生成请求已提交')
+
+
+def _extract_aigc_media_url(result, keys):
+    """兼容 OpenAI 风格 data[0].url 和部分 Wan 兼容接口的 output 字段"""
+    if not isinstance(result, dict):
+        return ''
+    for key in keys:
+        if result.get(key):
+            return result[key]
+
+    data = result.get('data')
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            for key in keys:
+                if first.get(key):
+                    return first[key]
+
+    output = result.get('output')
+    if isinstance(output, dict):
+        for key in keys:
+            if output.get(key):
+                return output[key]
+        videos = output.get('videos')
+        if isinstance(videos, list) and videos:
+            first = videos[0]
+            if isinstance(first, dict):
+                for key in keys:
+                    if first.get(key):
+                        return first[key]
+    return ''
 
 
 @diary_bp.route('/rebuild-index', methods=['POST'])

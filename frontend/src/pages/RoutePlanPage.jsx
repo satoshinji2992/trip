@@ -7,16 +7,20 @@ import { Card, Row, Col, Select, Button, Radio, Tag, List, Spin, Empty, Space, m
 import { CompassOutlined, AimOutlined, SwapOutlined, CarOutlined, NodeIndexOutlined } from '@ant-design/icons'
 import { routeAPI } from '../services/api'
 
-const MAX_RENDER_NODES = 220
-const MAX_RENDER_EDGES = 900
-const MAX_LABEL_NODES = 60
+const MAX_RENDER_NODES = 120
+const MAX_RENDER_EDGES = 600
+const MAX_LABEL_NODES = 25
 
 function pickRenderItems(nodes, edges, selectedIds) {
   const importantIds = new Set(selectedIds.filter(Boolean))
   const sampledNodes = sampleWithPriority(nodes, MAX_RENDER_NODES, importantIds)
-  const visibleNodeIds = new Set(sampledNodes.map((node) => node.id))
-  const candidateEdges = edges.filter((edge) => visibleNodeIds.has(edge.from_node_id) && visibleNodeIds.has(edge.to_node_id))
-  const sampledEdges = sampleWithPriority(candidateEdges, MAX_RENDER_EDGES)
+  const priorityEdges = []
+  const normalEdges = []
+  edges.forEach((edge) => {
+    if (importantIds.has(edge.from_node_id) || importantIds.has(edge.to_node_id)) priorityEdges.push(edge)
+    else normalEdges.push(edge)
+  })
+  const sampledEdges = sampleWithPriority([...priorityEdges, ...normalEdges], MAX_RENDER_EDGES, new Set(priorityEdges.map((edge) => edge.id)))
 
   return {
     nodes: sampledNodes,
@@ -49,8 +53,16 @@ function sampleWithPriority(items, limit, priorityIds = new Set()) {
 
 function pickLabelNodeIds(nodes, selectedIds) {
   const importantIds = new Set(selectedIds.filter(Boolean))
-  const sampledNodes = sampleWithPriority(nodes, MAX_LABEL_NODES, importantIds)
+  const labelCandidates = nodes.filter((node) => importantIds.has(node.id) || isUsefulNodeLabel(node.name))
+  const sampledNodes = sampleWithPriority(labelCandidates, MAX_LABEL_NODES, importantIds)
   return new Set(sampledNodes.map((node) => node.id))
+}
+
+function isUsefulNodeLabel(name = '') {
+  if (!name) return false
+  if (/^路口\d+$/.test(name)) return false
+  if (/出入口\d+$/.test(name)) return false
+  return true
 }
 
 function RoutePlanPage() {
@@ -186,7 +198,7 @@ function RoutePlanPage() {
       const res = await routeAPI.shortest({ scenic_id: parseInt(scenicId), from_node_id: fromNode, to_node_id: toNode, strategy, transport })
       setPathResult(res.data)
       message.success(`路径规划完成！${strategy === 'distance' ? '距离' : '时间'}: ${res.data.total_cost} ${res.data.cost_unit}`)
-    } catch (e) { message.error('路径规划失败') }
+    } catch (e) { message.error(e.message || '路径规划失败') }
     setCalculating(false)
   }
 
@@ -199,8 +211,12 @@ function RoutePlanPage() {
         destinations: multiDests, strategy, transport, return_to_start: returnToStart,
       })
       setMultiResult(res.data)
-      message.success(`多点路线规划完成！总${strategy === 'distance' ? '距离' : '时间'}: ${res.data.total_cost} ${res.data.cost_unit}`)
-    } catch (e) { message.error('路线规划失败') }
+      if (res.data?.unreachable_names?.length) {
+        message.warning(`部分节点不可达：${res.data.unreachable_names.join('、')}`)
+      } else {
+        message.success(`多点路线规划完成！总${strategy === 'distance' ? '距离' : '时间'}: ${res.data.total_cost} ${res.data.cost_unit}`)
+      }
+    } catch (e) { message.error(e.message || '路线规划失败') }
     setCalculating(false)
   }
 

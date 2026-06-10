@@ -1,6 +1,6 @@
 """Flask应用工厂"""
 import os
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
@@ -19,6 +19,10 @@ def create_app(config_name='default'):
     # 确保上传目录存在
     os.makedirs(app.config.get('UPLOAD_FOLDER', 'uploads'), exist_ok=True)
     os.makedirs(app.config.get('WHOOSH_INDEX_DIR', 'whoosh_index'), exist_ok=True)
+
+    @app.route('/uploads/<path:filename>')
+    def uploaded_file(filename):
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
     # 初始化扩展
     db.init_app(app)

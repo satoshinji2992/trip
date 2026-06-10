@@ -215,11 +215,20 @@ def multi_destination_shortest_path(graph, start_id, destinations, weight_type='
             if d < nearest_dist:
                 nearest_dist = d
                 nearest = dest
-        if nearest is None:
+        if nearest is None or nearest_dist == float('inf'):
             break
         greedy_order.append(nearest)
         unvisited.remove(nearest)
         current = nearest
+
+    if unvisited:
+        unreachable = list(unvisited)
+        destinations = [dest for dest in destinations if dest not in unvisited]
+
+        if not destinations:
+            return [], [], float('inf'), [{'unreachable': unreachable}]
+    else:
+        unreachable = []
 
     # 2-opt优化：反转子路径以减少总距离
     def calculate_total_cost(order):
@@ -276,16 +285,22 @@ def multi_destination_shortest_path(graph, start_id, destinations, weight_type='
         last = best_order[-1]
         return_segment = path_matrix.get((last, start_id), [])
         return_cost = dist_matrix.get((last, start_id), 0)
-        segment_paths.append({
-            'from': last,
-            'to': start_id,
-            'path': return_segment,
-            'cost': return_cost,
-        })
-        if ordered_path and return_segment and return_segment[0] == ordered_path[-1]:
-            ordered_path.extend(return_segment[1:])
+        if return_segment:
+            segment_paths.append({
+                'from': last,
+                'to': start_id,
+                'path': return_segment,
+                'cost': return_cost,
+            })
+            if ordered_path and return_segment and return_segment[0] == ordered_path[-1]:
+                ordered_path.extend(return_segment[1:])
+            else:
+                ordered_path.extend(return_segment)
         else:
-            ordered_path.extend(return_segment)
+            segment_paths.append({'unreachable': [start_id], 'from': last, 'to': start_id})
+
+    if unreachable:
+        segment_paths.append({'unreachable': unreachable})
 
     return ordered_path, best_order, best_cost, segment_paths
 
@@ -331,7 +346,7 @@ def build_graph_from_db(scenic_id, transport_mode='walk'):
             'transport': transport_mode,
         }
 
-        if edge.bidirectional:
+        if transport_mode == 'walk' or edge.bidirectional:
             graph.add_undirected_edge(edge.from_node_id, edge.to_node_id, distance, time_cost, edge_info)
         else:
             graph.add_edge(edge.from_node_id, edge.to_node_id, distance, time_cost, edge_info)

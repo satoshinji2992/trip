@@ -26,7 +26,11 @@ function FoodPage() {
 
   useEffect(() => {
     scenicAPI.list({ per_page: 200 })
-      .then(res => setScenicOptions((res.data?.items || []).map(s => ({ value: String(s.id), label: s.name }))))
+      .then(res => {
+        const options = (res.data?.items || []).map(s => ({ value: String(s.id), label: s.name }))
+        setScenicOptions(options)
+        if (!scenicId && options.length > 0) setScenicId(options[0].value)
+      })
       .catch(() => {})
     foodAPI.cuisines()
       .then(res => setCuisineOptions(res.data || []))

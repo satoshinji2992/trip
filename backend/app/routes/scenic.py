@@ -143,6 +143,8 @@ def search_scenics():
         sort_by: 结果排序方式
     """
     query_str = request.args.get('q', '').strip()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
     scenic_type = request.args.get('type', '')
     category = request.args.get('category', '')
     sort_by = request.args.get('sort_by', 'mixed')
@@ -161,7 +163,7 @@ def search_scenics():
     scenics_data = [s.to_dict() for s in all_scenics]
 
     # 使用模糊查找算法搜索
-    matched = fuzzy_search(query_str, scenics_data, fields=['name', 'category', 'description', 'address'])
+    matched = fuzzy_search(query_str, scenics_data, fields=['name', 'category', 'tags'])
 
     # 对结果再按热度/评价排序
     user_interests = None
@@ -176,10 +178,17 @@ def search_scenics():
     else:
         sorted_data = matched
 
+    start = (page - 1) * per_page
+    end = start + per_page
+    paged_data = sorted_data[start:end]
+
     return success({
-        'items': sorted_data,
+        'items': paged_data,
         'total': len(sorted_data),
         'query': query_str,
+        'page': page,
+        'per_page': per_page,
+        'pages': (len(sorted_data) + per_page - 1) // per_page,
     })
 
 

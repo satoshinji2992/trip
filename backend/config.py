@@ -4,6 +4,22 @@ import os
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 
+def _load_env_file(path=os.path.join(BASE_DIR, '.env')):
+    """加载本地.env文件，已有系统环境变量优先。"""
+    if not os.path.exists(path):
+        return
+    with open(path, 'r', encoding='utf-8') as env_file:
+        for line in env_file:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_env_file()
+
+
 class Config:
     """基础配置"""
     SECRET_KEY = os.environ.get('SECRET_KEY', 'trip-system-secret-key-2024')
@@ -13,6 +29,10 @@ class Config:
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB上传限制
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     WHOOSH_INDEX_DIR = os.path.join(BASE_DIR, 'whoosh_index')
+    AIGC_API_KEY = os.environ.get('AIGC_API_KEY', '')
+    AIGC_BASE_URL = os.environ.get('AIGC_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+    AIGC_MODEL = os.environ.get('AIGC_MODEL', 'wan2.1-i2v-turbo')
+    AIGC_ENDPOINT = os.environ.get('AIGC_ENDPOINT', '/videos/generations')
 
 
 class DevelopmentConfig(Config):

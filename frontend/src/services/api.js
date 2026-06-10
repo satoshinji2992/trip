@@ -84,6 +84,7 @@ export const diaryAPI = {
   uploadImage: (id, formData) => api.post(`/diary/${id}/upload-image`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
+  generateAnimation: (id, data) => api.post(`/diary/${id}/generate-animation`, data),
 }
 
 // ===== 美食推荐 =====

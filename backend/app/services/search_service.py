@@ -125,6 +125,8 @@ def fuzzy_search(query, items, fields, max_distance=2):
         return items
 
     query_lower = query.lower()
+    exact_only = _contains_cjk(query_lower)
+    max_allowed_distance = 1 if len(query_lower) <= 2 else max_distance
     results = []
 
     for item in items:
@@ -142,12 +144,15 @@ def fuzzy_search(query, items, fields, max_distance=2):
                 best_distance = 0
                 break
 
+            if exact_only:
+                continue
+
             # 2. 分词后逐词匹配
             words = re.split(r'[\s,，。.、/\\]+', value)
             for word in words:
                 if not word:
                     continue
-                is_match, dist = fuzzy_match(query_lower, word, max_distance)
+                is_match, dist = fuzzy_match(query_lower, word, max_allowed_distance)
                 if is_match and dist < best_distance:
                     best_distance = dist
                     matched = True
@@ -156,7 +161,7 @@ def fuzzy_search(query, items, fields, max_distance=2):
             if not matched and len(query_lower) <= len(value):
                 for start in range(len(value) - len(query_lower) + 1):
                     substr = value[start:start + len(query_lower)]
-                    is_match, dist = fuzzy_match(query_lower, substr, max_distance)
+                    is_match, dist = fuzzy_match(query_lower, substr, max_allowed_distance)
                     if is_match and dist < best_distance:
                         best_distance = dist
                         matched = True
@@ -169,6 +174,11 @@ def fuzzy_search(query, items, fields, max_distance=2):
     # 按匹配距离排序（距离越小越匹配）
     results.sort(key=lambda x: x.get('_match_distance', float('inf')))
     return results
+
+
+def _contains_cjk(text):
+    """中文搜索更适合精确包含匹配，避免短词编辑距离把无关结果召回"""
+    return any('\u4e00' <= char <= '\u9fff' for char in text)
 
 
 # ==================== Whoosh全文搜索 ====================

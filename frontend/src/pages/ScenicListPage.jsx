@@ -20,14 +20,14 @@ function ScenicListPage() {
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || '')
   const navigate = useNavigate()
 
-  const fetchData = async () => {
+  const fetchData = async (queryText = searchParams.get('q') || '', pageNo = page) => {
     setLoading(true)
     try {
       let res
-      if (searchQuery.trim()) {
-        res = await scenicAPI.search({ q: searchQuery, sort_by: sortBy, type: typeFilter })
+      if (queryText.trim()) {
+        res = await scenicAPI.search({ q: queryText, page: pageNo, per_page: 12, sort_by: sortBy, type: typeFilter })
       } else {
-        res = await scenicAPI.list({ page, per_page: 12, sort_by: sortBy, type: typeFilter })
+        res = await scenicAPI.list({ page: pageNo, per_page: 12, sort_by: sortBy, type: typeFilter })
       }
       setScenics(res.data?.items || [])
       setTotal(res.data?.total || 0)
@@ -35,22 +35,19 @@ function ScenicListPage() {
     setLoading(false)
   }
 
-  useEffect(() => { fetchData() }, [page, sortBy, typeFilter])
-
   useEffect(() => {
-    const q = searchParams.get('q')
-    if (q) { setSearchQuery(q); fetchData() }
-  }, [searchParams])
+    const q = searchParams.get('q') || ''
+    setSearchQuery(q)
+    fetchData(q, page)
+  }, [searchParams, page, sortBy, typeFilter])
 
   const handleSearch = (value) => {
-    setSearchQuery(value)
     setPage(1)
     if (value.trim()) {
       setSearchParams({ q: value })
     } else {
       setSearchParams({})
     }
-    fetchData()
   }
 
   return (
