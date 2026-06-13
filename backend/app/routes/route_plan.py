@@ -242,10 +242,18 @@ def get_map_data():
 
     nodes = GraphNode.query.filter_by(scenic_id=scenic_id).all()
     edges = GraphEdge.query.filter_by(scenic_id=scenic_id).all()
+    from app.models.building import Building
+    from app.models.facility import Facility
+    buildings = Building.query.filter_by(scenic_id=scenic_id).all()
+    facilities = Facility.query.filter_by(scenic_id=scenic_id).all()
 
     return success({
         'nodes': [n.to_dict() for n in nodes],
         'edges': [e.to_dict() for e in edges],
+        'buildings': [b.to_dict() for b in buildings],
+        'facilities': [f.to_dict() for f in facilities],
         'node_count': len(nodes),
         'edge_count': len(edges),
+        'building_count': len(buildings),
+        'facility_count': len(facilities),
     })

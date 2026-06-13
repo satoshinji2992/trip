@@ -1,10 +1,10 @@
 /**
  * 日记编辑页 - 创建/编辑日记
  */
-import React, { useState, useEffect, useContext } from 'react'
+import React, { useState, useEffect, useContext, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Alert, Card, Form, Image, Input, Select, Button, Switch, Tag, Spin, Upload, message } from 'antd'
-import { InboxOutlined, SaveOutlined } from '@ant-design/icons'
+import { Card, Form, Image, Input, Select, Button, Switch, Tag, Spin, message } from 'antd'
+import { DeleteOutlined, InboxOutlined, SaveOutlined } from '@ant-design/icons'
 import { diaryAPI, scenicAPI } from '../services/api'
 import { UserContext } from '../App'
 
@@ -20,7 +20,9 @@ function DiaryEditPage() {
   const [tags, setTags] = useState([])
   const [tagInput, setTagInput] = useState('')
   const [images, setImages] = useState([])
+  const [pendingImages, setPendingImages] = useState([])
   const [imageDescription, setImageDescription] = useState('')
+  const fileInputRef = useRef(null)
   const navigate = useNavigate()
   const isEdit = !!id
 
@@ -54,33 +56,67 @@ function DiaryEditPage() {
         navigate('/diary?tab=my')
       } else {
         const res = await diaryAPI.create(data)
-        message.success('创建成功，可继续上传图片')
+        if (pendingImages.length > 0) {
+          await uploadFiles(res.data.id, pendingImages)
+          message.success('创建成功，图片已上传')
+        } else {
+          message.success('创建成功')
+        }
+        setPendingImages([])
         navigate(`/diary/edit/${res.data.id}`)
       }
     } catch (e) { /* ignore */ }
     setSubmitting(false)
   }
 
-  const handleImageUpload = async ({ file, onSuccess, onError }) => {
-    if (!isEdit) {
-      message.warning('请先保存日记后再上传图片')
-      onError?.(new Error('请先保存日记后再上传图片'))
-      return
-    }
-
+  const uploadOneFile = async (diaryId, file) => {
     const formData = new FormData()
     formData.append('image', file)
     formData.append('description', imageDescription)
+    const res = await diaryAPI.uploadImage(diaryId, formData)
+    setImages((prev) => [...prev, res.data])
+    return res.data
+  }
 
-    try {
-      const res = await diaryAPI.uploadImage(id, formData)
-      setImages((prev) => [...prev, res.data])
-      setImageDescription('')
-      message.success('图片上传成功')
-      onSuccess?.(res.data)
-    } catch (e) {
-      onError?.(e)
+  const uploadFiles = async (diaryId, files) => {
+    for (const file of files) {
+      await uploadOneFile(diaryId, file)
     }
+    setImageDescription('')
+  }
+
+  const handleSelectedFiles = async (selectedFiles) => {
+    const files = Array.from(selectedFiles || [])
+    if (files.length === 0) return
+    if (!isEdit) {
+      setPendingImages((prev) => [...prev, ...files])
+      message.success(`已选择 ${files.length} 张图片，发布日记后自动上传`)
+      return
+    }
+    try {
+      await uploadFiles(id, files)
+      message.success(`已上传 ${files.length} 张图片`)
+    } catch (e) {
+      message.error('图片上传失败')
+    }
+  }
+
+  const handleNativeFileChange = async (event) => {
+    await handleSelectedFiles(event.target.files)
+    event.target.value = ''
+  }
+
+  const handleImageDrop = async (event) => {
+    event.preventDefault()
+    await handleSelectedFiles(event.dataTransfer.files)
+  }
+
+  const handleDeleteImage = async (imageId) => {
+    try {
+      await diaryAPI.deleteImage(id, imageId)
+      setImages((prev) => prev.filter((img) => img.id !== imageId))
+      message.success('图片已删除')
+    } catch (e) { /* ignore */ }
   }
 
   const addTag = () => {
@@ -114,19 +150,18 @@ function DiaryEditPage() {
             <TextArea rows={12} placeholder="记录你的旅行故事..." showCount maxLength={10000} />
           </Form.Item>
           <Form.Item label="图片">
-            {!isEdit && (
-              <Alert
-                type="info"
-                showIcon
-                className="mb-3"
-                message="先发布日记后即可上传图片"
-              />
-            )}
             {images.length > 0 && (
               <div className="grid grid-cols-3 gap-3 mb-3">
                 {images.map((img) => (
-                  <div key={img.id} className="aspect-video bg-gray-100 rounded overflow-hidden">
+                  <div key={img.id} className="relative aspect-video bg-gray-100 rounded overflow-hidden group">
                     <Image src={img.image_path} alt={img.description || '日记图片'} className="w-full h-full object-cover" />
+                    <Button
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      className="absolute top-2 right-2 opacity-90"
+                      onClick={() => handleDeleteImage(img.id)}
+                    />
                   </div>
                 ))}
               </div>
@@ -136,18 +171,31 @@ function DiaryEditPage() {
               placeholder="图片说明，可选"
               value={imageDescription}
               onChange={(e) => setImageDescription(e.target.value)}
-              disabled={!isEdit}
             />
-            <Upload.Dragger
+            <div
+              role="button"
+              tabIndex={0}
+              className="border border-dashed border-gray-300 rounded bg-gray-50 text-center py-8 cursor-pointer hover:border-blue-400 hover:bg-blue-50"
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click()
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleImageDrop}
+            >
+              <InboxOutlined className="text-3xl text-blue-500 mb-2" />
+              <div className="text-base">
+                {pendingImages.length > 0 ? `已选择 ${pendingImages.length} 张图片` : '点击或拖拽图片上传'}
+              </div>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
               accept="image/*"
               multiple
-              disabled={!isEdit}
-              showUploadList={false}
-              customRequest={handleImageUpload}
-            >
-              <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-              <p className="ant-upload-text">点击或拖拽图片上传</p>
-            </Upload.Dragger>
+              className="hidden"
+              onChange={handleNativeFileChange}
+            />
           </Form.Item>
           <Form.Item label="标签">
             <div className="flex flex-wrap gap-1 mb-2">

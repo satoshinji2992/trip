@@ -29,10 +29,9 @@ class Config:
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB上传限制
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     WHOOSH_INDEX_DIR = os.path.join(BASE_DIR, 'whoosh_index')
-    AIGC_API_KEY = os.environ.get('AIGC_API_KEY', '')
-    AIGC_BASE_URL = os.environ.get('AIGC_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-    AIGC_MODEL = os.environ.get('AIGC_MODEL', 'wan2.1-i2v-turbo')
-    AIGC_ENDPOINT = os.environ.get('AIGC_ENDPOINT', '/videos/generations')
+    AIGC_BASE_URL = os.environ.get('AIGC_BASE_URL', 'http://10.21.129.82:8000')
+    AIGC_ENDPOINT = os.environ.get('AIGC_ENDPOINT', '/generate')
+    AIGC_DEFAULT_PROMPT = os.environ.get('AIGC_DEFAULT_PROMPT', '')
 
 
 class DevelopmentConfig(Config):

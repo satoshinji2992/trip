@@ -338,15 +338,16 @@ def build_graph_from_db(scenic_id, transport_mode='walk'):
         # 时间 = 距离(米) / 速度(km/h) * 60 / 1000 = 距离 / 速度 * 0.06
         time_cost = (distance / 1000.0) / adjusted_speed * 60.0 if adjusted_speed > 0 else float('inf')
 
+        actual_transport = _get_edge_transport_mode(edge, transport_mode)
         edge_info = {
             'edge_id': edge.id,
             'road_name': edge.road_name,
             'road_type': edge.road_type,
             'congestion': edge.congestion,
-            'transport': transport_mode,
+            'transport': actual_transport,
         }
 
-        if transport_mode == 'walk' or edge.bidirectional:
+        if transport_mode in ('walk', 'bike', 'cart') or edge.bidirectional:
             graph.add_undirected_edge(edge.from_node_id, edge.to_node_id, distance, time_cost, edge_info)
         else:
             graph.add_edge(edge.from_node_id, edge.to_node_id, distance, time_cost, edge_info)
@@ -362,20 +363,28 @@ def _is_transport_allowed(edge, transport_mode):
     if transport_mode == 'walk':
         return True  # 步行总是允许的
     if transport_mode == 'bike':
-        return allowed in ('bike', 'all', 'bike_walk')
+        return allowed in ('bike', 'all', 'bike_walk', 'walk_only')
     if transport_mode == 'cart':
-        return allowed in ('cart', 'all', 'cart_only')
+        return allowed in ('cart', 'all', 'cart_only', 'walk_only')
     return True
+
+
+def _get_edge_transport_mode(edge, transport_mode):
+    """混合交通策略：自行车/电瓶车遇到步行路段时按步行处理"""
+    if transport_mode in ('bike', 'cart') and edge.transport_allowed == 'walk_only':
+        return 'walk'
+    return transport_mode
 
 
 def _get_adjusted_speed(edge, transport_mode):
     """根据交通模式和拥挤度调整速度"""
+    actual_mode = _get_edge_transport_mode(edge, transport_mode)
     base_speeds = {
         'walk': 5.0,    # 步行 5km/h
         'bike': 15.0,   # 自行车 15km/h
         'cart': 20.0,   # 电瓶车 20km/h（固定路线）
     }
-    base_speed = base_speeds.get(transport_mode, 5.0)
+    base_speed = base_speeds.get(actual_mode, 5.0)
     # 考虑拥挤度: 实际速度 = (1 - congestion) * 基础速度，最低为基础速度的10%
     congestion_factor = max(0.1, 1.0 - edge.congestion)
     return base_speed * congestion_factor

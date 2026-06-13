@@ -19,15 +19,15 @@ def create_facilities(scenics):
         nodes = GraphNode.query.filter_by(scenic_id=scenic.id).all()
         node_map = {n.id: n for n in nodes}
         node_ids = list(node_map.keys())
-        num = random.randint(5, 8)
-        used = random.sample(facility_templates, min(num, len(facility_templates)))
+        used = facility_templates * 5
 
-        for f_type, f_label in used:
+        for index, (f_type, f_label) in enumerate(used, start=1):
             gn_id = random.choice(node_ids) if node_ids else None
             graph_node = node_map.get(gn_id)
+            suffix = index if len(used) > len(facility_templates) else ''
             f = Facility(
                 scenic_id=scenic.id,
-                name=f"{scenic.name}{f_label}",
+                name=f"{scenic.name}{f_label}{suffix}",
                 type=f_type, category=f_label,
                 description=f"{scenic.name}内的{f_label}服务设施",
                 latitude=graph_node.latitude if graph_node else scenic.latitude + random.uniform(-0.005, 0.005),

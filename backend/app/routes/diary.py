@@ -1,8 +1,8 @@
 """旅游日记路由 - 日记管理、交流、全文搜索、压缩存储"""
 import json
 import os
-import urllib.error
-import urllib.request
+import uuid
+import requests
 from flask import Blueprint, request, current_app
 from flask_login import login_required, current_user
 from app import db
@@ -151,6 +151,7 @@ def get_diary(diary_id):
     data = diary.to_dict(include_content=True)
     # 附加图片
     data['images'] = [img.to_dict() for img in diary.images.all()]
+    data['videos'] = _list_diary_animation_videos(diary_id)
     # 附加评论
     data['comments'] = [c.to_dict() for c in diary.comments.order_by(DiaryComment.created_at.desc()).all()]
 
@@ -307,6 +308,26 @@ def fulltext_search():
                 diary_data['search_score'] = r['score']
                 enriched_results.append(diary_data)
 
+        if len(enriched_results) < limit:
+            existing_ids = {item['id'] for item in enriched_results}
+            fallback_diaries = Diary.query.filter_by(is_public=True).all()
+            for diary in fallback_diaries:
+                if diary.id in existing_ids:
+                    continue
+                searchable = ' '.join([
+                    diary.title or '',
+                    diary.destination or '',
+                    diary.tags or '',
+                    diary.get_content() or '',
+                ])
+                if query_str in searchable:
+                    diary_data = diary.to_dict(include_content=False)
+                    diary_data['search_score'] = 0.1
+                    enriched_results.append(diary_data)
+                    existing_ids.add(diary.id)
+                    if len(enriched_results) >= limit:
+                        break
+
         return success({
             'items': enriched_results,
             'total': len(enriched_results),
@@ -412,105 +433,147 @@ def upload_diary_image(diary_id):
         return error(f'上传失败: {str(e)}')
 
 
-@diary_bp.route('/<int:diary_id>/generate-animation', methods=['POST'])
+@diary_bp.route('/<int:diary_id>/image/<int:image_id>', methods=['DELETE'])
 @login_required
-def generate_diary_animation(diary_id):
-    """调用 OpenAI-compatible AIGC 接口生成旅游动画"""
+def delete_diary_image(diary_id, image_id):
+    """删除日记图片"""
     diary = Diary.query.get(diary_id)
     if not diary:
         return error('日记不存在', 404)
     if diary.user_id != current_user.id:
         return error('无权操作', 403)
 
-    api_key = current_app.config.get('AIGC_API_KEY', '')
-    if not api_key:
-        return error('未配置 AIGC_API_KEY，无法调用动画生成接口')
+    image = DiaryImage.query.filter_by(id=image_id, diary_id=diary_id).first()
+    if not image:
+        return error('图片不存在', 404)
+
+    image_path = _resolve_upload_path(image.image_path)
+    try:
+        db.session.delete(image)
+        db.session.commit()
+        if image_path and os.path.exists(image_path):
+            os.remove(image_path)
+        return success(message='图片删除成功')
+    except Exception as e:
+        db.session.rollback()
+        return error(f'删除失败: {str(e)}')
+
+
+@diary_bp.route('/<int:diary_id>/generate-animation', methods=['POST'])
+@login_required
+def generate_diary_animation(diary_id):
+    """调用局域网Wan视频服务生成旅游动画"""
+    diary = Diary.query.get(diary_id)
+    if not diary:
+        return error('日记不存在', 404)
+    if diary.user_id != current_user.id:
+        return error('无权操作', 403)
 
     data = request.get_json(silent=True) or {}
     user_prompt = data.get('prompt', '').strip()
     image_id = data.get('image_id')
+    size = data.get('size', '832*480')
+    sample_steps = str(data.get('sample_steps', '50'))
+    frame_num = str(data.get('frame_num', '121'))
+    seed = str(data.get('seed', '-1'))
     selected_image = None
     if image_id:
         selected_image = diary.images.filter_by(id=image_id).first()
     if not selected_image:
         selected_image = diary.images.order_by(DiaryImage.created_at.asc()).first()
+    if not selected_image:
+        return error('请先上传日记图片，再生成旅游动画')
 
-    prompt = user_prompt or (
-        f"根据旅游日记《{diary.title}》生成一段5秒旅游动画，画面自然流畅，"
-        f"体现目的地{diary.destination or '旅行地点'}的游览氛围。日记内容：{diary.get_content()[:500]}"
+    prompt = user_prompt or current_app.config.get('AIGC_DEFAULT_PROMPT') or (
+        'Create a 5-second cinematic yet realistic travel video of the Forbidden City based on the uploaded photo. '
+        'Preserve the palace architecture, roof shape, symmetry, colors, courtyard layout, and original perspective. '
+        'Use a slow, stable forward camera movement with subtle parallax. Add natural daylight, gentle atmospheric motion, '
+        'and a small amount of realistic visitor movement in the distance. Do not alter the building structure, roof details, '
+        'gates, or courtyard geometry. Do not add text, logos, watermarks, fantasy effects, distorted people, warped architecture, '
+        'or unrealistic objects. The final video should be clear, elegant, historically respectful, and suitable for a travel diary.'
     )
 
-    payload = {
-        'model': current_app.config.get('AIGC_MODEL', 'wan2.1-i2v-turbo'),
-        'prompt': prompt,
-        'duration': data.get('duration', 5),
-    }
-    if selected_image:
-        payload['image_url'] = request.host_url.rstrip('/') + selected_image.image_path
+    image_path = _resolve_upload_path(selected_image.image_path)
+    if not image_path or not os.path.exists(image_path):
+        return error('日记图片文件不存在，请重新上传图片')
 
-    base_url = current_app.config.get('AIGC_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1').rstrip('/')
-    endpoint = current_app.config.get('AIGC_ENDPOINT', '/videos/generations')
+    base_url = current_app.config.get('AIGC_BASE_URL', 'http://10.21.129.82:8000').rstrip('/')
+    endpoint = current_app.config.get('AIGC_ENDPOINT', '/generate')
     url = f"{base_url}/{endpoint.lstrip('/')}"
 
-    http_request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
-        headers={
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json',
-        },
-        method='POST',
-    )
-
     try:
-        with urllib.request.urlopen(http_request, timeout=120) as response:
-            result = json.loads(response.read().decode('utf-8'))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode('utf-8', errors='ignore')
-        current_app.logger.warning(f'AIGC接口调用失败: {body}')
-        return error(f'AIGC接口调用失败: HTTP {exc.code}')
+        with open(image_path, 'rb') as image_file:
+            response = requests.post(
+                url,
+                files={'image': image_file},
+                data={
+                    'prompt': prompt,
+                    'size': size,
+                    'sample_steps': sample_steps,
+                    'frame_num': frame_num,
+                    'seed': seed,
+                },
+                timeout=None,
+            )
+        if not response.ok:
+            detail = response.text[:500] if response.text else response.reason
+            current_app.logger.warning(
+                f'AIGC接口调用失败: status={response.status_code}, detail={detail}, '
+                f'params={{size:{size}, sample_steps:{sample_steps}, frame_num:{frame_num}, seed:{seed}}}'
+            )
+            return error(f'AIGC接口调用失败: HTTP {response.status_code} - {detail}')
     except Exception as exc:
         current_app.logger.warning(f'AIGC接口调用失败: {exc}')
         return error(f'AIGC接口调用失败: {str(exc)}')
 
-    video_url = _extract_aigc_media_url(result, ('video_url', 'url'))
+    video_dir = os.path.join(current_app.config['UPLOAD_FOLDER'], 'diary', str(diary_id))
+    os.makedirs(video_dir, exist_ok=True)
+    video_filename = f'animation_{uuid.uuid4().hex}.mp4'
+    video_path = os.path.join(video_dir, video_filename)
+    with open(video_path, 'wb') as video_file:
+        video_file.write(response.content)
+
+    video_url = f'/uploads/diary/{diary_id}/{video_filename}'
     return success({
         'video_url': video_url,
         'prompt': prompt,
-        'image_url': payload.get('image_url'),
-        'raw': result,
-    }, '动画生成请求已提交')
+        'image_url': selected_image.image_path,
+        'service_url': url,
+        'params': {
+            'size': size,
+            'sample_steps': sample_steps,
+            'frame_num': frame_num,
+            'seed': seed,
+        },
+    }, '动画生成成功')
 
 
-def _extract_aigc_media_url(result, keys):
-    """兼容 OpenAI 风格 data[0].url 和部分 Wan 兼容接口的 output 字段"""
-    if not isinstance(result, dict):
+def _resolve_upload_path(relative_path):
+    """将/uploads开头的访问路径转换为本地上传文件路径"""
+    if not relative_path:
         return ''
-    for key in keys:
-        if result.get(key):
-            return result[key]
+    prefix = '/uploads/'
+    if relative_path.startswith(prefix):
+        return os.path.join(current_app.config['UPLOAD_FOLDER'], relative_path[len(prefix):])
+    return os.path.join(current_app.config['UPLOAD_FOLDER'], relative_path.lstrip('/'))
 
-    data = result.get('data')
-    if isinstance(data, list) and data:
-        first = data[0]
-        if isinstance(first, dict):
-            for key in keys:
-                if first.get(key):
-                    return first[key]
 
-    output = result.get('output')
-    if isinstance(output, dict):
-        for key in keys:
-            if output.get(key):
-                return output[key]
-        videos = output.get('videos')
-        if isinstance(videos, list) and videos:
-            first = videos[0]
-            if isinstance(first, dict):
-                for key in keys:
-                    if first.get(key):
-                        return first[key]
-    return ''
+def _list_diary_animation_videos(diary_id):
+    """读取已生成的日记动画文件，刷新页面后也能展示历史结果"""
+    video_dir = os.path.join(current_app.config['UPLOAD_FOLDER'], 'diary', str(diary_id))
+    if not os.path.isdir(video_dir):
+        return []
+    videos = []
+    for filename in sorted(os.listdir(video_dir), reverse=True):
+        if not filename.startswith('animation_') or not filename.lower().endswith('.mp4'):
+            continue
+        file_path = os.path.join(video_dir, filename)
+        videos.append({
+            'filename': filename,
+            'video_url': f'/uploads/diary/{diary_id}/{filename}',
+            'created_at': os.path.getmtime(file_path),
+        })
+    return videos
 
 
 @diary_bp.route('/rebuild-index', methods=['POST'])

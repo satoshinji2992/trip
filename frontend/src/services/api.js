@@ -84,6 +84,7 @@ export const diaryAPI = {
   uploadImage: (id, formData) => api.post(`/diary/${id}/upload-image`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
+  deleteImage: (id, imageId) => api.delete(`/diary/${id}/image/${imageId}`),
   generateAnimation: (id, data) => api.post(`/diary/${id}/generate-animation`, data),
 }
 
