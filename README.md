@@ -63,7 +63,7 @@ http://localhost:3000
 
 ## AIGC 视频生成服务
 
-`wan2.2/` 中放的是视频生成服务代码。主系统通过后端环境变量调用它：
+`wan2.2_traval_fintuned/` 中放的是视频生成服务代码。主系统通过后端环境变量调用它：
 
 ```text
 AIGC_BASE_URL=http://10.21.129.82:8000

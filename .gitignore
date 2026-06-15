@@ -33,20 +33,20 @@ release/
 *.zip
 
 # AI video service runtime artifacts
-wan2.2/.git/
-wan2.2/**/__pycache__/
-wan2.2/**/*.pyc
-wan2.2/checkpoints/
-wan2.2/models/
-wan2.2/outputs/
-wan2.2/results/
-wan2.2/*.mp4
-wan2.2/examples/**/*.mp4
-wan2.2/examples/*.mp4
-wan2.2/examples/*.MP3
-wan2.2/examples/*.mp3
-wan2.2/examples/*.wav
-wan2.2/*.log
+wan2.2_traval_fintuned/.git/
+wan2.2_traval_fintuned/**/__pycache__/
+wan2.2_traval_fintuned/**/*.pyc
+wan2.2_traval_fintuned/checkpoints/
+wan2.2_traval_fintuned/models/
+wan2.2_traval_fintuned/outputs/
+wan2.2_traval_fintuned/results/
+wan2.2_traval_fintuned/*.mp4
+wan2.2_traval_fintuned/examples/**/*.mp4
+wan2.2_traval_fintuned/examples/*.mp4
+wan2.2_traval_fintuned/examples/*.MP3
+wan2.2_traval_fintuned/examples/*.mp3
+wan2.2_traval_fintuned/examples/*.wav
+wan2.2_traval_fintuned/*.log
 
 # Environment files
 .env
