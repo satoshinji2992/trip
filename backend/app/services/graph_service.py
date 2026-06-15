@@ -345,6 +345,9 @@ def build_graph_from_db(scenic_id, transport_mode='walk'):
             'road_type': edge.road_type,
             'congestion': edge.congestion,
             'transport': actual_transport,
+            'distance': distance,
+            'time_cost': time_cost,
+            'actual_speed': adjusted_speed,
         }
 
         if transport_mode in ('walk', 'bike', 'cart') or edge.bidirectional:

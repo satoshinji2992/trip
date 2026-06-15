@@ -74,6 +74,7 @@ def _unify_graphs_by_template(scenics):
         if template:
             _ensure_min_edges(template, min_edges=220)
             _normalize_template_transport(template)
+            _apply_demo_congestion_pattern(template)
     db.session.flush()
 
     for scenic in scenics:
@@ -174,6 +175,41 @@ def _normalize_template_transport(scenic):
             edge.transport_allowed = 'bike_walk'
         else:
             edge.transport_allowed = 'cart_only'
+
+
+def _apply_demo_congestion_pattern(scenic):
+    """写入确定性的拥挤度分布，让最短距离和最短时间可能选择不同道路。
+
+    设计思路：
+    - 主路/热门连线距离短，但在演示数据中更拥挤；
+    - 支路/绕行路距离可能更长，但拥挤度低；
+    - 小路和台阶保持中等拥挤，避免所有时间成本接近。
+    """
+    edges = GraphEdge.query.filter_by(scenic_id=scenic.id).order_by(
+        GraphEdge.distance.asc(), GraphEdge.id.asc()
+    ).all()
+    if not edges:
+        return
+
+    for index, edge in enumerate(edges):
+        if edge.road_type == 'main':
+            edge.congestion = 0.88 if index % 3 == 0 else 0.72
+            edge.ideal_speed = 5.5
+        elif edge.road_type == 'branch':
+            edge.congestion = 0.08 if index % 4 in {0, 1} else 0.22
+            edge.ideal_speed = 5.0
+        elif edge.road_type == 'path':
+            edge.congestion = 0.38 if index % 2 == 0 else 0.52
+            edge.ideal_speed = 3.5
+        else:
+            edge.congestion = 0.25
+
+    # 额外把最短的一批连线标记为高拥堵，制造“近但慢”的可解释演示场景。
+    hot_edge_count = max(8, min(30, len(edges) // 8))
+    for edge in edges[:hot_edge_count]:
+        edge.congestion = max(edge.congestion, 0.9)
+        if not edge.road_name:
+            edge.road_name = '高峰拥堵路段'
 
 
 def _collect_target_scenics(scenics, manifest, env_targets):

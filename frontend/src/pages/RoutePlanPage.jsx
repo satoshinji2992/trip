@@ -65,6 +65,18 @@ function isUsefulNodeLabel(name = '') {
   return true
 }
 
+function congestionColor(congestion = 0) {
+  if (congestion >= 0.75) return '#ff4d4f'
+  if (congestion >= 0.45) return '#faad14'
+  return '#52c41a'
+}
+
+function congestionLabel(congestion = 0) {
+  if (congestion >= 0.75) return '拥挤'
+  if (congestion >= 0.45) return '较忙'
+  return '畅通'
+}
+
 function RoutePlanPage() {
   const { scenicId } = useParams()
   const [mapData, setMapData] = useState({ nodes: [], edges: [] })
@@ -112,17 +124,18 @@ function RoutePlanPage() {
     const renderData = pickRenderItems(mapData.nodes, mapData.edges, selectedIds)
     const labelNodeIds = pickLabelNodeIds(renderData.nodes, selectedIds)
 
-    // 绘制边
-    ctx.strokeStyle = '#d9d9d9'
     ctx.lineWidth = renderData.simplified ? 1 : 1.5
     renderData.edges.forEach(e => {
       const from = nodeMap[e.from_node_id]
       const to = nodeMap[e.to_node_id]
       if (from && to) {
+        ctx.strokeStyle = congestionColor(e.congestion)
+        ctx.globalAlpha = 0.45
         ctx.beginPath()
         ctx.moveTo(from.x, from.y)
         ctx.lineTo(to.x, to.y)
         ctx.stroke()
+        ctx.globalAlpha = 1
       }
     })
 
@@ -249,6 +262,12 @@ function RoutePlanPage() {
               <span className="inline-block w-3 h-3 rounded-full bg-blue-500 ml-3 mr-1" /> 普通节点
               <span className="text-blue-500 ml-3">--- 规划路径</span>
             </div>
+            <div className="text-xs text-gray-400 mt-1">
+              道路拥挤度：
+              <span className="inline-block w-6 h-1 bg-green-500 ml-2 mr-1 align-middle" /> 畅通
+              <span className="inline-block w-6 h-1 bg-yellow-500 ml-3 mr-1 align-middle" /> 较忙
+              <span className="inline-block w-6 h-1 bg-red-500 ml-3 mr-1 align-middle" /> 拥挤
+            </div>
           </Card>
         </Col>
         <Col xs={24} md={8}>
@@ -320,8 +339,20 @@ function RoutePlanPage() {
                 <div>
                   <p><strong>距离:</strong> {pathResult.distance}米</p>
                   <p><strong>预计时间:</strong> {pathResult.time}分钟</p>
+                  <p><strong>平均拥挤度:</strong> <Tag color={pathResult.avg_congestion >= 0.75 ? 'red' : pathResult.avg_congestion >= 0.45 ? 'orange' : 'green'}>{congestionLabel(pathResult.avg_congestion)} {pathResult.avg_congestion}</Tag></p>
                   <p><strong>途经节点:</strong> {pathResult.node_count}个</p>
                   <Divider className="my-2" />
+                  {pathResult.edge_details?.length > 0 && (
+                    <div className="text-xs mb-2">
+                      <div className="font-semibold mb-1">路段拥挤情况:</div>
+                      {pathResult.edge_details.slice(0, 8).map((edge, i) => (
+                        <Tag key={`${edge.from_node_id}-${edge.to_node_id}-${i}`} color={edge.congestion >= 0.75 ? 'red' : edge.congestion >= 0.45 ? 'orange' : 'green'}>
+                          {edge.road_name || '道路'} {congestionLabel(edge.congestion)} {edge.congestion}
+                        </Tag>
+                      ))}
+                      {pathResult.edge_details.length > 8 && <span className="text-gray-400">等 {pathResult.edge_details.length} 段</span>}
+                    </div>
+                  )}
                   <div className="text-xs">
                     {pathResult.path_details?.map((n, i) => (
                       <span key={i}>

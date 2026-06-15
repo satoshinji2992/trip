@@ -58,9 +58,7 @@ class GraphEdge(db.Model):
     to_node = db.relationship('GraphNode', foreign_keys=[to_node_id], backref='edges_to')
 
     def get_actual_speed(self):
-        """根据拥挤度计算实际速度: 实际速度 = 拥挤度 * 理想速度"""
-        # 拥挤度为小于等于1的正数，实际速度 = (1 - congestion + 0.1) * ideal_speed
-        # 确保最低速度不为0
+        """根据拥挤度计算实际速度，拥挤度越高速度越低。"""
         factor = max(0.1, 1.0 - self.congestion)
         return factor * self.ideal_speed
 

@@ -9,6 +9,48 @@ from app.utils.response import success, error
 route_bp = Blueprint('route', __name__)
 
 
+def _find_edge_info(graph, from_node_id, to_node_id):
+    """在邻接表中查找路径相邻节点之间的边信息。"""
+    for neighbor_id, distance, time_cost, edge_info in graph.get_neighbors(from_node_id):
+        if neighbor_id == to_node_id:
+            return distance, time_cost, edge_info or {}
+    return 0, 0, {}
+
+
+def _summarize_path(graph, path):
+    """统计同一条规划路径的距离、时间和拥挤度。"""
+    total_distance = 0.0
+    total_time = 0.0
+    congestion_values = []
+    edge_details = []
+
+    for from_id, to_id in zip(path, path[1:]):
+        distance, time_cost, edge_info = _find_edge_info(graph, from_id, to_id)
+        congestion = edge_info.get('congestion', 0)
+        congestion_values.append(congestion)
+        total_distance += distance
+        total_time += time_cost
+        edge_details.append({
+            'from_node_id': from_id,
+            'to_node_id': to_id,
+            'road_name': edge_info.get('road_name', ''),
+            'road_type': edge_info.get('road_type', ''),
+            'transport': edge_info.get('transport', ''),
+            'distance': round(distance, 2),
+            'time': round(time_cost, 2),
+            'congestion': round(congestion, 2),
+            'actual_speed': round(edge_info.get('actual_speed', 0), 2),
+        })
+
+    avg_congestion = sum(congestion_values) / len(congestion_values) if congestion_values else 0
+    return {
+        'distance': total_distance,
+        'time': total_time,
+        'avg_congestion': avg_congestion,
+        'edge_details': edge_details,
+    }
+
+
 @route_bp.route('/shortest', methods=['POST'])
 def get_shortest_path():
     """
@@ -65,9 +107,7 @@ def get_shortest_path():
             'longitude': node_info.get('longitude', 0),
         })
 
-    # 计算另一种策略的成本（如果按距离算，也提供时间估算，反之亦然）
-    other_type = 'time' if weight_type == 'distance' else 'distance'
-    _, other_cost = shortest_path(graph, from_node_id, to_node_id, other_type)
+    path_summary = _summarize_path(graph, path)
 
     return success({
         'path': path,
@@ -76,8 +116,10 @@ def get_shortest_path():
         'cost_unit': '米' if weight_type == 'distance' else '分钟',
         'strategy': strategy,
         'transport': transport,
-        'distance': round(total_cost, 2) if weight_type == 'distance' else round(other_cost, 2),
-        'time': round(other_cost, 2) if weight_type == 'distance' else round(total_cost, 2),
+        'distance': round(path_summary['distance'], 2),
+        'time': round(path_summary['time'], 2),
+        'avg_congestion': round(path_summary['avg_congestion'], 2),
+        'edge_details': path_summary['edge_details'],
         'node_count': len(path),
     })
 
