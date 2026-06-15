@@ -357,7 +357,4 @@ def sort_by_path_distance(items, graph, source_node_id, node_id_key='graph_node_
     sortable = [SortableItem(data=item, score=-item['distance']) for item in items]
     # score取负是因为Top-K返回分数最大的，而我们要距离最小的
     sorted_items = top_k_sort(sortable, k=len(sortable))
-    # 反转因为分数为负
-    result = [item.data for item in sorted_items]
-    result.reverse()
-    return result
+    return [item.data for item in sorted_items]

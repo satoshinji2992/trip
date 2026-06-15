@@ -1,0 +1,28 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editor/OS
+.DS_Store
+.vscode/
+.vscode*
+
+# Local scratch/checkpoints
+tmp_examples*/
+new_checkpoint*/
+batch_test*/
+nohup*
+
+# Large model/checkpoint directories
+Wan2.2-TI2V-5B/
+Wan2.2-T2V-A14B/
+Wan2.2-I2V-A14B/
+Wan2.2-S2V-14B/
+Wan2.2-Animate-14B/
+Wan-AI/
+
+# Generated outputs
+api_outputs/
+ti2v-*.mp4
+*.log

@@ -16,6 +16,8 @@ env/
 backend/uploads/
 backend/whoosh_index/
 backend/*.db
+*.sqlite
+*.sqlite3
 
 # Node / frontend
 frontend/node_modules/
@@ -25,6 +27,26 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Release / package outputs
+release/
+*.zip
+
+# AI video service runtime artifacts
+wan2.2/.git/
+wan2.2/**/__pycache__/
+wan2.2/**/*.pyc
+wan2.2/checkpoints/
+wan2.2/models/
+wan2.2/outputs/
+wan2.2/results/
+wan2.2/*.mp4
+wan2.2/examples/**/*.mp4
+wan2.2/examples/*.mp4
+wan2.2/examples/*.MP3
+wan2.2/examples/*.mp3
+wan2.2/examples/*.wav
+wan2.2/*.log
 
 # Environment files
 .env
