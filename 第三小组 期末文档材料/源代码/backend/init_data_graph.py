@@ -1,0 +1,710 @@
+"""道路图数据初始化 - 支持真实地图导入和模拟数据回退"""
+import json
+import math
+import os
+import random
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from app import db
+from app.models.graph import GraphNode, GraphEdge
+
+
+REAL_MAP_DIR = os.path.join(os.path.dirname(__file__), 'real_map_data')
+REAL_MAP_MANIFEST = os.path.join(REAL_MAP_DIR, 'manifest.json')
+OVERPASS_URL = os.environ.get('OVERPASS_URL', 'https://overpass-api.de/api/interpreter')
+DEFAULT_FETCH_RADIUS = int(os.environ.get('REAL_MAP_RADIUS', '900'))
+ALLOWED_HIGHWAYS = {
+    'footway', 'pedestrian', 'path', 'steps', 'service', 'track', 'cycleway',
+    'living_street', 'residential', 'unclassified', 'tertiary', 'secondary',
+    'primary', 'trunk',
+}
+
+
+def create_road_graphs(scenics):
+    """为景区和校园创建道路图，优先使用真实地图，失败时回退到模拟图"""
+    total_nodes = 0
+    total_edges = 0
+    manifest = _load_real_map_manifest()
+    env_targets = _parse_env_target_names()
+    fetch_all = os.environ.get('REAL_MAP_FETCH_ALL', '').lower() in {'1', 'true', 'yes'}
+
+    target_scenics = _collect_target_scenics(scenics, manifest, env_targets)
+
+    for scenic in target_scenics:
+        source_config = manifest.get(scenic.name, {})
+        should_try_real = bool(source_config) or fetch_all or scenic.name in env_targets
+        created_nodes = 0
+        created_edges = 0
+
+        if should_try_real:
+            try:
+                created_nodes, created_edges = _create_real_road_graph(scenic, source_config)
+                print(f"  {scenic.name}: 导入真实地图 {created_nodes} 个节点 / {created_edges} 条边")
+            except Exception as exc:
+                print(f"  {scenic.name}: 真实地图导入失败，回退模拟图 ({exc})")
+
+        if created_nodes == 0 or created_edges == 0:
+            created_nodes, created_edges = _create_simulated_road_graph(scenic)
+            print(f"  {scenic.name}: 生成模拟道路图 {created_nodes} 个节点 / {created_edges} 条边")
+
+        total_nodes += created_nodes
+        total_edges += created_edges
+
+    db.session.commit()
+    unified_nodes, unified_edges = _unify_graphs_by_template(scenics)
+    db.session.commit()
+    print(f"  初始生成 {total_nodes} 个节点和 {total_edges} 条边")
+    print(f"  统一内部地图后共 {unified_nodes} 个节点和 {unified_edges} 条边")
+
+
+def _unify_graphs_by_template(scenics):
+    """景区复用故宫道路图，校园复用北大道路图，满足课程要求的“内部可以一致”"""
+    from app.models.scenic import Scenic
+
+    scenic_template = next((s for s in scenics if s.name == '故宫博物院'), None)
+    campus_template = next((s for s in scenics if s.name == '北京大学'), None)
+    if not scenic_template:
+        scenic_template = next((s for s in scenics if s.type == 'scenic'), None)
+    if not campus_template:
+        campus_template = next((s for s in scenics if s.type == 'campus'), None)
+
+    for template in [scenic_template, campus_template]:
+        if template:
+            _ensure_min_edges(template, min_edges=220)
+            _normalize_template_transport(template)
+            _apply_demo_congestion_pattern(template)
+    db.session.flush()
+
+    for scenic in scenics:
+        template = campus_template if scenic.type == 'campus' else scenic_template
+        if not template or scenic.id == template.id:
+            continue
+        _replace_graph_with_template(scenic, template)
+
+    db.session.flush()
+    total_nodes = sum(GraphNode.query.filter_by(scenic_id=scenic.id).count() for scenic in scenics)
+    total_edges = sum(GraphEdge.query.filter_by(scenic_id=scenic.id).count() for scenic in scenics)
+    return total_nodes, total_edges
+
+
+def _ensure_min_edges(scenic, min_edges=220):
+    """给模板图补充少量可通行连线，保证每个复制出的内部地图边数达标"""
+    nodes = GraphNode.query.filter_by(scenic_id=scenic.id).all()
+    edge_count = GraphEdge.query.filter_by(scenic_id=scenic.id).count()
+    if len(nodes) < 2 or edge_count >= min_edges:
+        return
+
+    existing_pairs = {
+        tuple(sorted((edge.from_node_id, edge.to_node_id)))
+        for edge in GraphEdge.query.filter_by(scenic_id=scenic.id).all()
+    }
+
+    attempts = 0
+    while edge_count < min_edges and attempts < min_edges * 20:
+        attempts += 1
+        from_node, to_node = random.sample(nodes, 2)
+        pair = tuple(sorted((from_node.id, to_node.id)))
+        if pair in existing_pairs:
+            continue
+        distance = math.hypot(from_node.x - to_node.x, from_node.y - to_node.y)
+        if distance <= 1:
+            continue
+        db.session.add(GraphEdge(
+            scenic_id=scenic.id,
+            from_node_id=from_node.id,
+            to_node_id=to_node.id,
+            distance=round(distance, 1),
+            road_name='内部连接道',
+            bidirectional=True,
+            congestion=round(random.uniform(0.1, 0.5), 2),
+            road_type='branch',
+            transport_allowed='all',
+            ideal_speed=5.0,
+        ))
+        existing_pairs.add(pair)
+        edge_count += 1
+
+
+def _replace_graph_with_template(scenic, template):
+    """删除目标旧图并复制模板图，保留相同的相对坐标和道路结构"""
+    GraphEdge.query.filter_by(scenic_id=scenic.id).delete(synchronize_session=False)
+    GraphNode.query.filter_by(scenic_id=scenic.id).delete(synchronize_session=False)
+    db.session.flush()
+
+    template_nodes = GraphNode.query.filter_by(scenic_id=template.id).order_by(GraphNode.id.asc()).all()
+    node_id_map = {}
+    for node in template_nodes:
+        new_node = GraphNode(
+            scenic_id=scenic.id,
+            name=node.name,
+            node_type=node.node_type,
+            latitude=scenic.latitude + (node.latitude - template.latitude),
+            longitude=scenic.longitude + (node.longitude - template.longitude),
+            x=node.x,
+            y=node.y,
+        )
+        db.session.add(new_node)
+        db.session.flush()
+        node_id_map[node.id] = new_node.id
+
+    template_edges = GraphEdge.query.filter_by(scenic_id=template.id).order_by(GraphEdge.id.asc()).all()
+    for edge in template_edges:
+        db.session.add(GraphEdge(
+            scenic_id=scenic.id,
+            from_node_id=node_id_map[edge.from_node_id],
+            to_node_id=node_id_map[edge.to_node_id],
+            distance=edge.distance,
+            road_name=edge.road_name,
+            bidirectional=edge.bidirectional,
+            congestion=edge.congestion,
+            road_type=edge.road_type,
+            transport_allowed=edge.transport_allowed,
+            ideal_speed=edge.ideal_speed,
+        ))
+
+
+def _normalize_template_transport(scenic):
+    """统一模板的混合交通规则：主支路可骑/可乘，小路和台阶只能步行"""
+    edges = GraphEdge.query.filter_by(scenic_id=scenic.id).all()
+    for edge in edges:
+        if edge.road_type in {'path', 'indoor'}:
+            edge.transport_allowed = 'walk_only'
+        elif scenic.type == 'campus':
+            edge.transport_allowed = 'bike_walk'
+        else:
+            edge.transport_allowed = 'cart_only'
+
+
+def _apply_demo_congestion_pattern(scenic):
+    """写入确定性的拥挤度分布，让最短距离和最短时间可能选择不同道路。
+
+    设计思路：
+    - 主路/热门连线距离短，但在演示数据中更拥挤；
+    - 支路/绕行路距离可能更长，但拥挤度低；
+    - 小路和台阶保持中等拥挤，避免所有时间成本接近。
+    """
+    edges = GraphEdge.query.filter_by(scenic_id=scenic.id).order_by(
+        GraphEdge.distance.asc(), GraphEdge.id.asc()
+    ).all()
+    if not edges:
+        return
+
+    for index, edge in enumerate(edges):
+        if edge.road_type == 'main':
+            edge.congestion = 0.88 if index % 3 == 0 else 0.72
+            edge.ideal_speed = 5.5
+        elif edge.road_type == 'branch':
+            edge.congestion = 0.08 if index % 4 in {0, 1} else 0.22
+            edge.ideal_speed = 5.0
+        elif edge.road_type == 'path':
+            edge.congestion = 0.38 if index % 2 == 0 else 0.52
+            edge.ideal_speed = 3.5
+        else:
+            edge.congestion = 0.25
+
+    # 额外把最短的一批连线标记为高拥堵，制造“近但慢”的可解释演示场景。
+    hot_edge_count = max(8, min(30, len(edges) // 8))
+    for edge in edges[:hot_edge_count]:
+        edge.congestion = max(edge.congestion, 0.9)
+        if not edge.road_name:
+            edge.road_name = '高峰拥堵路段'
+
+
+def _collect_target_scenics(scenics, manifest, env_targets):
+    """收集需要生成道路图的景区，默认覆盖全部景区，也包含显式配置的景区"""
+    scenic_by_name = {s.name: s for s in scenics}
+    ordered = list(scenics)
+    seen_ids = {scenic.id for scenic in ordered}
+
+    for scenic_name in list(manifest.keys()) + list(env_targets):
+        scenic = scenic_by_name.get(scenic_name)
+        if scenic and scenic.id not in seen_ids:
+            ordered.append(scenic)
+            seen_ids.add(scenic.id)
+
+    return ordered
+
+
+def _load_real_map_manifest():
+    """加载真实地图清单，可选"""
+    if not os.path.exists(REAL_MAP_MANIFEST):
+        return {}
+
+    with open(REAL_MAP_MANIFEST, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError('real_map_data/manifest.json 必须是对象字典')
+    return data
+
+
+def _parse_env_target_names():
+    """从环境变量中读取需要拉取真实地图的景区名称"""
+    raw = os.environ.get('REAL_MAP_SCENICS', '').strip()
+    if not raw:
+        return set()
+    return {item.strip() for item in raw.split(',') if item.strip()}
+
+
+def _create_real_road_graph(scenic, source_config):
+    """根据配置导入真实道路图"""
+    source_type = source_config.get('source', '').strip().lower()
+    if source_type == 'geojson':
+        geojson_path = source_config.get('file', '').strip()
+        if not geojson_path:
+            raise ValueError('geojson 来源缺少 file 字段')
+        if not os.path.isabs(geojson_path):
+            geojson_path = os.path.join(REAL_MAP_DIR, geojson_path)
+        return _create_graph_from_geojson_file(scenic, geojson_path)
+
+    radius = int(source_config.get('radius', DEFAULT_FETCH_RADIUS))
+    return _create_graph_from_overpass(scenic, radius=radius)
+
+
+def _create_graph_from_geojson_file(scenic, geojson_path):
+    """从本地 GeoJSON 文件构建道路图"""
+    if not os.path.exists(geojson_path):
+        raise FileNotFoundError(f'未找到 GeoJSON 文件: {geojson_path}')
+
+    with open(geojson_path, 'r', encoding='utf-8') as f:
+        geojson = json.load(f)
+
+    ways = _extract_geojson_ways(geojson)
+    return _persist_way_graph(scenic, ways)
+
+
+def _create_graph_from_overpass(scenic, radius=900):
+    """从 Overpass API 拉取景区周边步行道路"""
+    query = f"""
+    [out:json][timeout:25];
+    (
+      way(around:{radius},{scenic.latitude},{scenic.longitude})["highway"];
+    );
+    (._;>;);
+    out body;
+    """
+    data = urllib.parse.urlencode({'data': query}).encode('utf-8')
+    request = urllib.request.Request(
+        OVERPASS_URL,
+        data=data,
+        headers={
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': 'trip-course-demo/1.0',
+        },
+        method='POST',
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f'Overpass 请求失败: {exc}') from exc
+
+    ways = _extract_overpass_ways(payload, scenic)
+    return _persist_way_graph(scenic, ways)
+
+
+def _extract_overpass_ways(payload, scenic):
+    """将 Overpass 响应转换为标准化 way 列表"""
+    elements = payload.get('elements', [])
+    node_lookup = {}
+    for element in elements:
+        if element.get('type') == 'node':
+            node_lookup[element['id']] = {
+                'lat': element['lat'],
+                'lng': element['lon'],
+                'name': element.get('tags', {}).get('name', ''),
+            }
+
+    ways = []
+    for element in elements:
+        if element.get('type') != 'way':
+            continue
+        tags = element.get('tags', {})
+        highway = tags.get('highway')
+        if highway not in ALLOWED_HIGHWAYS:
+            continue
+        road_name = tags.get('name') or tags.get('ref')
+        if not road_name:
+            continue
+
+        coords = []
+        for node_id in element.get('nodes', []):
+            node = node_lookup.get(node_id)
+            if not node:
+                continue
+            coords.append({
+                'lat': node['lat'],
+                'lng': node['lng'],
+                'node_name': node.get('name', ''),
+            })
+
+        if len(coords) < 2:
+            continue
+
+        ways.append({
+            'id': element['id'],
+            'name': road_name,
+            'highway': highway,
+            'oneway': str(tags.get('oneway', 'no')).lower() in {'yes', 'true', '1'},
+            'coords': coords,
+            'surface': tags.get('surface', ''),
+        })
+
+    return ways
+
+
+def _extract_geojson_ways(geojson):
+    """从 GeoJSON 中提取线状道路要素"""
+    features = geojson.get('features', [])
+    ways = []
+
+    for index, feature in enumerate(features, start=1):
+        geometry = feature.get('geometry') or {}
+        properties = feature.get('properties') or {}
+        geom_type = geometry.get('type')
+        coordinates = geometry.get('coordinates') or []
+        if geom_type == 'LineString':
+            coordinates = [coordinates]
+        elif geom_type != 'MultiLineString':
+            continue
+
+        for segment_index, segment in enumerate(coordinates, start=1):
+            if len(segment) < 2:
+                continue
+            coords = []
+            for lng, lat, *rest in segment:
+                coords.append({'lat': lat, 'lng': lng, 'node_name': ''})
+
+            highway = properties.get('highway') or properties.get('road_type') or 'path'
+            ways.append({
+                'id': f'geojson-{index}-{segment_index}',
+                'name': properties.get('name') or f'GeoJSON道路{index}-{segment_index}',
+                'highway': str(highway),
+                'oneway': bool(properties.get('oneway', False)),
+                'coords': coords,
+                'surface': properties.get('surface', ''),
+            })
+
+    return ways
+
+
+def _persist_way_graph(scenic, ways):
+    """持久化标准化道路数据到数据库"""
+    if not ways:
+        raise ValueError('未解析到可用道路数据')
+
+    coordinate_nodes = {}
+    graph_nodes = []
+    all_points = []
+    edge_specs = []
+    key_usage = {}
+    key_source_names = {}
+
+    for way in ways:
+        for point in way['coords']:
+            key = _coordinate_key(point['lat'], point['lng'])
+            key_usage[key] = key_usage.get(key, 0) + 1
+            if point.get('node_name'):
+                key_source_names[key] = point.get('node_name')
+
+    for way in ways:
+        coords = way['coords']
+        for idx, point in enumerate(coords):
+            key = _coordinate_key(point['lat'], point['lng'])
+            if _should_keep_way_point(key, idx, len(coords), key_usage, key_source_names):
+                all_points.append((point['lat'], point['lng']))
+
+    projected_by_key = _project_coordinates_by_key(all_points)
+
+    def get_or_create_node(point, way_name):
+        key = _coordinate_key(point['lat'], point['lng'])
+        if key not in coordinate_nodes:
+            x, y = projected_by_key[key]
+            node = GraphNode(
+                scenic_id=scenic.id,
+                name='',
+                node_type='intersection',
+                latitude=point['lat'],
+                longitude=point['lng'],
+                x=x,
+                y=y,
+            )
+            db.session.add(node)
+            coordinate_nodes[key] = {
+                'db_node': node,
+                'source_name': key_source_names.get(key, ''),
+                'ways': set(),
+            }
+            graph_nodes.append(node)
+        node_data = coordinate_nodes[key]
+        if way_name:
+            node_data['ways'].add(way_name)
+        return node_data['db_node']
+
+    for way in ways:
+        coords = way['coords']
+        last_node = None
+        last_point = None
+        segment_distance = 0.0
+
+        for idx, point in enumerate(coords):
+            key = _coordinate_key(point['lat'], point['lng'])
+            if last_point is not None:
+                segment_distance += _haversine_meters(
+                    last_point['lat'], last_point['lng'],
+                    point['lat'], point['lng'],
+                )
+
+            if not _should_keep_way_point(key, idx, len(coords), key_usage, key_source_names):
+                last_point = point
+                continue
+
+            current_node = get_or_create_node(point, way['name'])
+            if last_node is not None and last_node is not current_node and segment_distance >= 1:
+                road_name = way['name'] or _fallback_road_name(scenic, way['highway'])
+                edge_specs.append({
+                    'from_node': last_node,
+                    'to_node': current_node,
+                    'distance': round(segment_distance, 1),
+                    'road_name': road_name,
+                    'bidirectional': not way['oneway'],
+                    'road_type': _map_highway_to_road_type(way['highway']),
+                    'transport_allowed': _map_highway_to_transport(way['highway'], scenic.type),
+                    'ideal_speed': _ideal_speed_for_highway(way['highway']),
+                    'congestion': _default_congestion_for_highway(way['highway']),
+                })
+
+            last_node = current_node
+            last_point = point
+            segment_distance = 0.0
+
+    db.session.flush()
+    node_degree = {node.id: 0 for node in graph_nodes}
+    graph_edges = []
+
+    for spec in edge_specs:
+        edge = GraphEdge(
+            scenic_id=scenic.id,
+            from_node_id=spec['from_node'].id,
+            to_node_id=spec['to_node'].id,
+            distance=spec['distance'],
+            road_name=spec['road_name'],
+            bidirectional=spec['bidirectional'],
+            congestion=spec['congestion'],
+            road_type=spec['road_type'],
+            transport_allowed=spec['transport_allowed'],
+            ideal_speed=spec['ideal_speed'],
+        )
+        db.session.add(edge)
+        graph_edges.append(edge)
+        node_degree[spec['from_node'].id] = node_degree.get(spec['from_node'].id, 0) + 1
+        node_degree[spec['to_node'].id] = node_degree.get(spec['to_node'].id, 0) + 1
+
+    db.session.flush()
+
+    for index, node in enumerate(graph_nodes, start=1):
+        key = _coordinate_key(node.latitude, node.longitude)
+        node_data = coordinate_nodes[key]
+        if node_data['source_name']:
+            node.name = node_data['source_name']
+        elif len(node_data['ways']) >= 2:
+            joined = '/'.join(list(sorted(node_data['ways']))[:2])
+            node.name = f'{joined}交汇点'
+        elif node_degree.get(node.id, 0) <= 1:
+            node.name = f'{scenic.name}出入口{index}'
+            node.node_type = 'gate'
+        else:
+            node.name = f'路口{index}'
+
+    if not graph_nodes or not graph_edges:
+        raise ValueError('真实地图数据不足以形成可用图结构')
+
+    return len(graph_nodes), len(graph_edges)
+
+
+def _create_simulated_road_graph(scenic):
+    """创建模拟道路图，作为真实地图失败时的兜底方案"""
+    road_types = ['main', 'branch', 'path']
+    node_names_scenic = [
+        '正门', '东门', '南门', '西门', '北门', '广场', '停车场', '游客中心',
+        '售票处', '湖边', '桥头', '山脚', '山腰', '山顶', '花园', '竹林',
+        '古树', '喷泉', '亭子', '商业街入口', '美食广场', '纪念品商店',
+        '观景台', '码头', '索道站',
+    ]
+    node_names_campus = [
+        '正门', '东门', '南门', '西门', '教学楼A', '教学楼B', '教学楼C',
+        '图书馆', '实验楼', '行政楼', '学生食堂', '第二食堂', '第三食堂',
+        '体育馆', '操场', '游泳馆', '宿舍区A', '宿舍区B', '医务室',
+        '超市', '快递站', '银行ATM', '校史馆', '湖边', '花园',
+    ]
+
+    num_nodes = random.randint(15, 25)
+    names = node_names_campus if scenic.type == 'campus' else node_names_scenic
+    nodes = []
+    edge_count = 0
+
+    for i in range(min(num_nodes, len(names))):
+        node = GraphNode(
+            scenic_id=scenic.id,
+            name=names[i],
+            node_type='intersection',
+            latitude=scenic.latitude + random.uniform(-0.008, 0.008),
+            longitude=scenic.longitude + random.uniform(-0.008, 0.008),
+            x=random.uniform(50, 950),
+            y=random.uniform(50, 650),
+        )
+        db.session.add(node)
+        nodes.append(node)
+
+    db.session.flush()
+
+    for i in range(1, len(nodes)):
+        parent = random.randint(0, i - 1)
+        distance = random.uniform(50, 500)
+        congestion = random.uniform(0.0, 0.8)
+        road_type = random.choice(road_types)
+        transport = random.choice(['all', 'all', 'bike']) if scenic.type == 'campus' else random.choice(['all', 'all', 'cart'])
+        speed = {'main': 5.0, 'branch': 4.0, 'path': 3.0}.get(road_type, 5.0)
+
+        db.session.add(GraphEdge(
+            scenic_id=scenic.id,
+            from_node_id=nodes[parent].id,
+            to_node_id=nodes[i].id,
+            distance=round(distance, 1),
+            road_name=f'{nodes[parent].name}-{nodes[i].name}路',
+            bidirectional=True,
+            congestion=round(congestion, 2),
+            road_type=road_type,
+            transport_allowed=transport,
+            ideal_speed=speed,
+        ))
+        edge_count += 1
+
+    extra = random.randint(8, 18)
+    for _ in range(extra):
+        a, b = random.sample(range(len(nodes)), 2)
+        db.session.add(GraphEdge(
+            scenic_id=scenic.id,
+            from_node_id=nodes[a].id,
+            to_node_id=nodes[b].id,
+            distance=round(random.uniform(30, 400), 1),
+            road_name=f'{nodes[a].name}-{nodes[b].name}',
+            bidirectional=True,
+            congestion=round(random.uniform(0.0, 0.7), 2),
+            road_type=random.choice(road_types),
+            transport_allowed=random.choice(['all', 'all', 'bike', 'cart']),
+            ideal_speed=round(random.uniform(3.0, 6.0), 1),
+        ))
+        edge_count += 1
+
+    return len(nodes), edge_count
+
+
+def _project_coordinates(points):
+    """将经纬度投影到前端 canvas 使用的相对坐标系"""
+    lats = [lat for lat, _ in points]
+    lngs = [lng for _, lng in points]
+    min_lat, max_lat = min(lats), max(lats)
+    min_lng, max_lng = min(lngs), max(lngs)
+    lat_span = max(max_lat - min_lat, 1e-6)
+    lng_span = max(max_lng - min_lng, 1e-6)
+
+    projected = []
+    for lat, lng in points:
+        x = 50 + ((lng - min_lng) / lng_span) * 900
+        y = 650 - ((lat - min_lat) / lat_span) * 600
+        projected.append((round(x, 2), round(y, 2)))
+    return projected
+
+
+def _project_coordinates_by_key(points):
+    """按去重后的坐标生成投影，避免 OSM 复用节点时画布坐标错位"""
+    unique_points = {}
+    for lat, lng in points:
+        unique_points.setdefault(_coordinate_key(lat, lng), (lat, lng))
+
+    projected = _project_coordinates(list(unique_points.values()))
+    return dict(zip(unique_points.keys(), projected))
+
+
+def _should_keep_way_point(key, index, total, key_usage, key_source_names):
+    """真实路网只保留端点、交汇点和有名字的点，普通折线点压缩进边距离"""
+    return (
+        index == 0
+        or index == total - 1
+        or key_usage.get(key, 0) > 1
+        or bool(key_source_names.get(key))
+    )
+
+
+def _fallback_road_name(scenic, highway):
+    """给没有 OSM 名称的道路一个可读名称，避免出现内部编号"""
+    if highway == 'steps':
+        return '台阶通道'
+    if highway in {'footway', 'pedestrian', 'path'}:
+        return '步行道'
+    if highway == 'cycleway':
+        return '骑行道'
+    return '园区道路' if scenic.type == 'scenic' else '校园道路'
+
+
+def _coordinate_key(lat, lng):
+    """对坐标做有限精度归一，减少重复节点"""
+    return round(lat, 6), round(lng, 6)
+
+
+def _haversine_meters(lat1, lng1, lat2, lng2):
+    """计算两点球面距离（米）"""
+    radius = 6371000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lng2 - lng1)
+
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return 2 * radius * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _map_highway_to_road_type(highway):
+    """OSM highway 到业务 road_type 的映射"""
+    if highway in {'primary', 'secondary', 'tertiary'}:
+        return 'main'
+    if highway in {'residential', 'service', 'living_street', 'unclassified', 'cycleway'}:
+        return 'branch'
+    return 'path'
+
+
+def _map_highway_to_transport(highway, scenic_type):
+    """根据道路类型推断可用交通方式"""
+    if highway in {'steps', 'footway', 'path', 'pedestrian', 'track'}:
+        return 'walk_only'
+    if scenic_type == 'campus' and highway in {'cycleway', 'residential', 'service', 'living_street'}:
+        return 'bike_walk'
+    if scenic_type != 'campus' and highway in {'service', 'residential', 'living_street'}:
+        return 'cart_only'
+    return 'all'
+
+
+def _ideal_speed_for_highway(highway):
+    """根据道路类型给出基础速度"""
+    if highway in {'primary', 'secondary', 'tertiary'}:
+        return 5.5
+    if highway in {'cycleway', 'residential', 'service', 'living_street'}:
+        return 4.5
+    if highway == 'steps':
+        return 2.5
+    return 3.5
+
+
+def _default_congestion_for_highway(highway):
+    """给真实道路默认拥挤度，避免所有道路时间成本相同"""
+    if highway in {'primary', 'secondary'}:
+        return 0.35
+    if highway in {'pedestrian', 'footway'}:
+        return 0.2
+    if highway == 'steps':
+        return 0.45
+    return 0.15

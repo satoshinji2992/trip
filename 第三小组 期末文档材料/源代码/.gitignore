@@ -1,0 +1,54 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Backend runtime data
+backend/uploads/
+backend/whoosh_index/
+backend/*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Release / package outputs
+release/
+*.zip
+
+# AI video service runtime artifacts
+wan2.2_traval_fintuned/.git/
+wan2.2_traval_fintuned/**/__pycache__/
+wan2.2_traval_fintuned/**/*.pyc
+wan2.2_traval_fintuned/checkpoints/
+wan2.2_traval_fintuned/models/
+wan2.2_traval_fintuned/outputs/
+wan2.2_traval_fintuned/results/
+wan2.2_traval_fintuned/*.mp4
+wan2.2_traval_fintuned/examples/**/*.mp4
+wan2.2_traval_fintuned/examples/*.mp4
+wan2.2_traval_fintuned/examples/*.MP3
+wan2.2_traval_fintuned/examples/*.mp3
+wan2.2_traval_fintuned/examples/*.wav
+wan2.2_traval_fintuned/*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
